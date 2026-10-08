@@ -1,0 +1,17 @@
+{
+  "name": "AnimeDB - Next-Gen Anime Discovery Platform",
+  "short_name": "AnimeDB",
+  "description": "The internet's fastest anime database, character hall of fame, and legal streaming guide.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d0f14",
+  "theme_color": "#0d0f14",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

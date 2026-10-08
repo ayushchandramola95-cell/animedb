@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#131622" />
+      <stop offset="100%" stop-color="#0d0f14" />
+    </linearGradient>
+    <linearGradient id="primary" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#60a5fa" />
+      <stop offset="50%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#1d4ed8" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#a855f7" />
+      <stop offset="100%" stop-color="#3b82f6" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background rounded card -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)" stroke="#222736" stroke-width="8" />
+
+  <!-- Geometric Anime "A" / Play Glyph -->
+  <g transform="translate(64, 64)">
+    <!-- Back Glow / Shadow Shape -->
+    <path d="M 192 48 L 336 336 L 272 336 L 224 232 L 160 232 L 112 336 L 48 336 Z" 
+          fill="url(#accent)" opacity="0.3" filter="blur(16px)" />
+    
+    <!-- Main Stylized 'A' -->
+    <path d="M 192 48 L 328 336 L 264 336 L 224 248 L 160 248 L 120 336 L 56 336 Z" 
+          fill="url(#primary)" />
+    
+    <!-- Inner Crossbar & Cutout -->
+    <polygon points="192,120 212,204 172,204" fill="#0d0f14" />
+
+    <!-- Play/Forward Triangle Accent inside crossbar -->
+    <polygon points="178,284 240,284 209,240" fill="#60a5fa" opacity="0.9" />
+
+    <!-- Speed sparkle star -->
+    <path d="M 300 90 Q 300 120 330 120 Q 300 120 300 150 Q 300 120 270 120 Q 300 120 300 90 Z" 
+          fill="#38bdf8" />
+  </g>
+</svg>
