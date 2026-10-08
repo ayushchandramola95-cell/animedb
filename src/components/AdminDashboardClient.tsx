@@ -7,11 +7,8 @@ import {
   Zap,
   Database,
   Server,
-  CheckCircle2,
-  AlertCircle,
   Terminal,
   Search,
-  Filter,
   RefreshCw,
   Play,
   Layers,
@@ -22,8 +19,11 @@ import {
   Radio,
   ExternalLink,
   Loader2,
-  Calendar,
   Sparkles,
+  Film,
+  Tag,
+  Clock,
+  Video,
 } from "lucide-react";
 import Navbar from "./Navbar";
 
@@ -35,12 +35,32 @@ interface DbStats {
   totalStreamingLinks: number;
 }
 
+interface CharacterItem {
+  character_id: number;
+  character_name: string;
+  character_image: string | null;
+  voice_actor_id: number | null;
+  voice_actor_name: string | null;
+  voice_actor_image: string | null;
+  role: string;
+}
+
+interface StreamingLinkItem {
+  id: string;
+  platform_name: string;
+  target_url: string;
+  affiliate_url: string | null;
+  is_official: boolean;
+  region: string | null;
+}
+
 interface AnimeRecord {
   id: string;
   anilist_id: number;
   mal_id: number | null;
   title_english: string | null;
   title_romaji: string;
+  title_native: string | null;
   slug: string;
   synopsis: string | null;
   format: string;
@@ -48,6 +68,7 @@ interface AnimeRecord {
   season: string | null;
   season_year: number | null;
   episodes_count: number | null;
+  episode_duration: number | null;
   score: number | null;
   popularity: number;
   cover_image_url: string | null;
@@ -55,11 +76,20 @@ interface AnimeRecord {
   accent_color: string | null;
   genres: string[];
   studios: any;
+  youtube_trailer_id: string | null;
+  source: string | null;
+  tags: any;
+  relations: any;
+  staff: any;
+  start_date: string | null;
+  end_date: string | null;
   next_airing_episode: number | null;
   next_airing_at: string | null;
   is_published: boolean;
   created_at: string;
   updated_at: string;
+  characters?: CharacterItem[];
+  streaming_links?: StreamingLinkItem[];
 }
 
 export default function AdminDashboardClient() {
@@ -73,7 +103,6 @@ export default function AdminDashboardClient() {
     totalVoiceActors: 0,
     totalStreamingLinks: 0,
   });
-  const [dbStatus, setDbStatus] = useState<string>("Connecting...");
   const [recentLogs, setRecentLogs] = useState<any[]>([]);
   const [recentAnime, setRecentAnime] = useState<any[]>([]);
   const [loadingStats, setLoadingStats] = useState(true);
@@ -96,7 +125,11 @@ export default function AdminDashboardClient() {
   const [totalPages, setTotalPages] = useState(1);
   const [totalRecords, setTotalRecords] = useState(0);
   const [loadingAnime, setLoadingAnime] = useState(false);
+
+  // Deep inspect modal state
   const [selectedAnime, setSelectedAnime] = useState<AnimeRecord | null>(null);
+  const [loadingInspect, setLoadingInspect] = useState(false);
+  const [inspectTab, setInspectTab] = useState<"overview" | "cast" | "stream" | "trailer">("overview");
 
   const addLog = (msg: string) => {
     setIngestLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 100)]);
@@ -110,14 +143,11 @@ export default function AdminDashboardClient() {
       const data = await res.json();
       if (data.success) {
         setStats(data.stats);
-        setDbStatus("Connected (Google Cloud SQL PostgreSQL 16)");
         setRecentLogs(data.recentLogs || []);
         setRecentAnime(data.recentAnime || []);
-      } else {
-        setDbStatus("Connection Error");
       }
-    } catch {
-      setDbStatus("Connection Error");
+    } catch (err) {
+      console.error(err);
     } finally {
       setLoadingStats(false);
     }
@@ -145,6 +175,25 @@ export default function AdminDashboardClient() {
       console.error(err);
     } finally {
       setLoadingAnime(false);
+    }
+  };
+
+  // Open Full Inspect Modal (fetch related characters & streams)
+  const handleOpenInspect = async (anime: AnimeRecord) => {
+    setSelectedAnime(anime);
+    setInspectTab("overview");
+    setLoadingInspect(true);
+
+    try {
+      const res = await fetch(`/api/admin/anime?id=${anime.anilist_id}`);
+      const data = await res.json();
+      if (data.success && data.data) {
+        setSelectedAnime(data.data);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoadingInspect(false);
     }
   };
 
@@ -218,7 +267,6 @@ export default function AdminDashboardClient() {
         break;
       }
 
-      // Safe sleep between pages to respect AniList 90 req/min limit
       if (p < batchMaxPages) {
         addLog(`Sleeping 1.5s to respect AniList API rate limits...`);
         await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -227,6 +275,15 @@ export default function AdminDashboardClient() {
 
     addLog(`Batch Crawl Completed!`);
     setBatchRunning(false);
+  };
+
+  // Helper for studios display
+  const getStudioName = (studios: any) => {
+    if (!studios) return "N/A";
+    if (Array.isArray(studios) && studios.length > 0) {
+      return studios[0].name || "N/A";
+    }
+    return "N/A";
   };
 
   return (
@@ -324,7 +381,6 @@ export default function AdminDashboardClient() {
         {/* ========================================================================= */}
         {activeTab === "overview" && (
           <div className="flex flex-col gap-6">
-            {/* Live 4-Card Metrics Grid */}
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="p-5 rounded-2xl bg-[#121622] border border-[#1f2638] flex flex-col justify-between">
                 <div className="flex items-center justify-between text-xs text-gray-400">
@@ -453,7 +509,8 @@ export default function AdminDashboardClient() {
                   {recentAnime.map((anime: any) => (
                     <div
                       key={anime.anilist_id}
-                      className="p-2.5 rounded-xl bg-[#121622] border border-[#1f2638] flex flex-col justify-between group hover:border-blue-500/40 transition-all"
+                      onClick={() => handleOpenInspect(anime)}
+                      className="p-2.5 rounded-xl bg-[#121622] border border-[#1f2638] flex flex-col justify-between group hover:border-blue-500/40 transition-all cursor-pointer"
                     >
                       <div className="relative aspect-[3/4] w-full rounded-lg overflow-hidden bg-gray-900 mb-2">
                         {anime.cover_image_url ? (
@@ -480,7 +537,7 @@ export default function AdminDashboardClient() {
                         </h4>
                         <div className="flex items-center justify-between text-[10px] text-gray-400 mt-1">
                           <span>{anime.format || "TV"}</span>
-                          <span className={anime.status === "RELEASING" ? "text-emerald-400" : "text-gray-400"}>
+                          <span className={anime.status === "RELEASING" ? "text-emerald-400 font-semibold" : "text-gray-400"}>
                             {anime.status}
                           </span>
                         </div>
@@ -529,7 +586,6 @@ export default function AdminDashboardClient() {
         {/* ========================================================================= */}
         {activeTab === "ingest" && (
           <div className="flex flex-col gap-6">
-            {/* Multi-Page Automated Batch Runner */}
             <div className="p-6 rounded-2xl bg-[#121622] border border-[#1f2638] flex flex-col gap-4">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
@@ -636,7 +692,7 @@ export default function AdminDashboardClient() {
                 <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
-                  placeholder="Search by title (e.g., Attack on Titan, Solo Leveling)..."
+                  placeholder="Search by title (e.g., Attack on Titan, Solo Leveling, Frieren)..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && fetchAnimeRecords(1)}
@@ -782,7 +838,7 @@ export default function AdminDashboardClient() {
                                 <ExternalLink className="w-3.5 h-3.5" />
                               </Link>
                               <button
-                                onClick={() => setSelectedAnime(anime)}
+                                onClick={() => handleOpenInspect(anime)}
                                 className="px-2.5 py-1 rounded-lg bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/20 text-[11px] font-semibold transition-colors flex items-center gap-1"
                               >
                                 <Eye className="w-3 h-3" />
@@ -820,65 +876,411 @@ export default function AdminDashboardClient() {
                 </div>
               )}
             </div>
+          </div>
+        )}
 
-            {/* Inspect Modal */}
-            {selectedAnime && (
-              <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-                <div className="max-w-2xl w-full bg-[#121622] border border-[#232c40] rounded-2xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]">
-                  <div className="px-6 py-4 bg-[#151a28] border-b border-[#232c40] flex items-center justify-between">
-                    <div>
-                      <span className="text-[10px] text-gray-500 font-mono">
-                        Record ID: #{selectedAnime.anilist_id}
-                      </span>
-                      <h3 className="text-sm font-bold text-white">
-                        {selectedAnime.title_english || selectedAnime.title_romaji}
-                      </h3>
-                    </div>
-                    <button
-                      onClick={() => setSelectedAnime(null)}
-                      className="text-gray-400 hover:text-white text-xs font-bold"
-                    >
-                      ✕ Close
-                    </button>
-                  </div>
+        {/* ========================================================================= */}
+        {/* COMPREHENSIVE ANIME INSPECTION MODAL */}
+        {/* ========================================================================= */}
+        {selectedAnime && (
+          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
+            <div className="max-w-4xl w-full bg-[#11141e] border border-[#232c42] rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[92vh]">
+              {/* Top Cinematic Header Banner */}
+              <div className="relative h-44 sm:h-56 w-full bg-gradient-to-t from-[#11141e] to-gray-900 shrink-0">
+                {selectedAnime.banner_image_url ? (
+                  <Image
+                    src={selectedAnime.banner_image_url}
+                    alt=""
+                    fill
+                    className="object-cover opacity-35"
+                  />
+                ) : (
+                  <div
+                    className="w-full h-full opacity-25"
+                    style={{ backgroundColor: selectedAnime.accent_color || "#3b82f6" }}
+                  />
+                )}
+                <div className="absolute inset-0 bg-gradient-to-t from-[#11141e] via-[#11141e]/60 to-transparent" />
 
-                  <div className="p-6 overflow-y-auto space-y-4 text-xs">
-                    <div className="flex gap-4">
-                      {selectedAnime.cover_image_url && (
-                        <div className="relative w-24 h-32 rounded-lg overflow-hidden shrink-0">
-                          <Image
-                            src={selectedAnime.cover_image_url}
-                            alt=""
-                            fill
-                            className="object-cover"
-                          />
-                        </div>
-                      )}
-                      <div className="flex flex-col gap-1 text-gray-300">
-                        <p><strong>Romaji:</strong> {selectedAnime.title_romaji}</p>
-                        <p><strong>Status:</strong> {selectedAnime.status}</p>
-                        <p><strong>Format:</strong> {selectedAnime.format}</p>
-                        <p><strong>Score:</strong> {selectedAnime.score || "N/A"}</p>
-                        <p><strong>Season:</strong> {selectedAnime.season} {selectedAnime.season_year}</p>
-                        <p><strong>Genres:</strong> {selectedAnime.genres?.join(", ") || "N/A"}</p>
+                {/* Close Button */}
+                <button
+                  onClick={() => setSelectedAnime(null)}
+                  className="absolute top-4 right-4 z-10 p-2 rounded-full bg-black/60 hover:bg-black/80 text-gray-300 hover:text-white transition-colors"
+                >
+                  ✕
+                </button>
+
+                {/* Header Content with Floating Cover Poster */}
+                <div className="absolute bottom-4 left-6 right-6 flex items-end gap-4 sm:gap-6">
+                  <div className="relative w-20 sm:w-28 aspect-[3/4] rounded-2xl overflow-hidden shadow-2xl border-2 border-[#2b354e] bg-gray-900 shrink-0">
+                    {selectedAnime.cover_image_url ? (
+                      <Image
+                        src={selectedAnime.cover_image_url}
+                        alt=""
+                        fill
+                        className="object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-xs text-gray-600">
+                        No Cover
                       </div>
-                    </div>
-
-                    <div className="pt-3 border-t border-[#1f2638]">
-                      <h4 className="font-semibold text-white mb-1">Synopsis</h4>
-                      <p className="text-gray-400 text-[11px] leading-relaxed max-h-32 overflow-y-auto">
-                        {selectedAnime.synopsis || "No synopsis available."}
-                      </p>
-                    </div>
-
-                    <div className="pt-3 border-t border-[#1f2638] flex items-center justify-between text-[11px] text-gray-500 font-mono">
-                      <span>Ingested at: {new Date(selectedAnime.created_at).toLocaleString()}</span>
-                      <span>Last Updated: {new Date(selectedAnime.updated_at).toLocaleString()}</span>
-                    </div>
+                    )}
                   </div>
+
+                  <div className="flex-1 min-w-0 pb-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <span className="px-2 py-0.5 rounded-md bg-blue-500/20 text-blue-400 border border-blue-500/30 text-[10px] font-mono font-bold">
+                        #{selectedAnime.anilist_id}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
+                        {selectedAnime.status}
+                      </span>
+                      {selectedAnime.score && (
+                        <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold flex items-center gap-1">
+                          ★ {selectedAnime.score}
+                        </span>
+                      )}
+                    </div>
+                    <h2 className="text-lg sm:text-2xl font-extrabold text-white truncate" title={selectedAnime.title_romaji}>
+                      {selectedAnime.title_english || selectedAnime.title_romaji}
+                    </h2>
+                    <p className="text-xs text-gray-400 truncate">
+                      {selectedAnime.title_romaji} {selectedAnime.title_native ? `• ${selectedAnime.title_native}` : ""}
+                    </p>
+                  </div>
+
+                  {/* Public Link Button */}
+                  <Link
+                    href={`/anime/${selectedAnime.anilist_id}`}
+                    target="_blank"
+                    className="hidden sm:flex px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold items-center gap-1.5 transition-colors shadow-lg shadow-blue-600/30 shrink-0"
+                  >
+                    <span>View Public Page</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </Link>
                 </div>
               </div>
-            )}
+
+              {/* Modal Tabs Bar */}
+              <div className="px-6 border-b border-[#202738] bg-[#141824] flex items-center gap-2">
+                <button
+                  onClick={() => setInspectTab("overview")}
+                  className={`px-3.5 py-2.5 text-xs font-bold border-b-2 transition-colors flex items-center gap-1.5 ${
+                    inspectTab === "overview"
+                      ? "border-blue-500 text-blue-400"
+                      : "border-transparent text-gray-400 hover:text-gray-200"
+                  }`}
+                >
+                  <Tv className="w-3.5 h-3.5" />
+                  <span>Story & Details</span>
+                </button>
+
+                <button
+                  onClick={() => setInspectTab("cast")}
+                  className={`px-3.5 py-2.5 text-xs font-bold border-b-2 transition-colors flex items-center gap-1.5 ${
+                    inspectTab === "cast"
+                      ? "border-blue-500 text-blue-400"
+                      : "border-transparent text-gray-400 hover:text-gray-200"
+                  }`}
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  <span>Cast & Voice Actors</span>
+                  {selectedAnime.characters && selectedAnime.characters.length > 0 && (
+                    <span className="px-1.5 py-0.2 rounded-full bg-blue-500/20 text-blue-300 text-[9px]">
+                      {selectedAnime.characters.length}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  onClick={() => setInspectTab("stream")}
+                  className={`px-3.5 py-2.5 text-xs font-bold border-b-2 transition-colors flex items-center gap-1.5 ${
+                    inspectTab === "stream"
+                      ? "border-blue-500 text-blue-400"
+                      : "border-transparent text-gray-400 hover:text-gray-200"
+                  }`}
+                >
+                  <Film className="w-3.5 h-3.5" />
+                  <span>Where to Watch</span>
+                  {selectedAnime.streaming_links && selectedAnime.streaming_links.length > 0 && (
+                    <span className="px-1.5 py-0.2 rounded-full bg-purple-500/20 text-purple-300 text-[9px]">
+                      {selectedAnime.streaming_links.length}
+                    </span>
+                  )}
+                </button>
+
+                {selectedAnime.youtube_trailer_id && (
+                  <button
+                    onClick={() => setInspectTab("trailer")}
+                    className={`px-3.5 py-2.5 text-xs font-bold border-b-2 transition-colors flex items-center gap-1.5 ${
+                      inspectTab === "trailer"
+                        ? "border-blue-500 text-blue-400"
+                        : "border-transparent text-gray-400 hover:text-gray-200"
+                    }`}
+                  >
+                    <Video className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Official Trailer</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Modal Body Content */}
+              <div className="p-6 overflow-y-auto flex-1 space-y-6 text-xs text-gray-300">
+                {loadingInspect ? (
+                  <div className="p-12 flex flex-col items-center justify-center gap-3">
+                    <Loader2 className="w-6 h-6 animate-spin text-blue-400" />
+                    <span className="text-xs text-gray-400">Loading full relational records...</span>
+                  </div>
+                ) : (
+                  <>
+                    {/* SUBTAB 1: STORY & DETAILS */}
+                    {inspectTab === "overview" && (
+                      <div className="space-y-6">
+                        {/* Quick Metadata Matrix */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          <div className="p-3 rounded-xl bg-[#151a26] border border-[#21293c]">
+                            <span className="text-[10px] text-gray-500 uppercase font-semibold">Format</span>
+                            <div className="text-sm font-bold text-white mt-0.5">
+                              {selectedAnime.format || "TV"} • {selectedAnime.episodes_count ? `${selectedAnime.episodes_count} eps` : "Ongoing"}
+                            </div>
+                          </div>
+
+                          <div className="p-3 rounded-xl bg-[#151a26] border border-[#21293c]">
+                            <span className="text-[10px] text-gray-500 uppercase font-semibold">Studio</span>
+                            <div className="text-sm font-bold text-white mt-0.5 truncate">
+                              {getStudioName(selectedAnime.studios)}
+                            </div>
+                          </div>
+
+                          <div className="p-3 rounded-xl bg-[#151a26] border border-[#21293c]">
+                            <span className="text-[10px] text-gray-500 uppercase font-semibold">Season</span>
+                            <div className="text-sm font-bold text-white mt-0.5">
+                              {selectedAnime.season || "Unknown"} {selectedAnime.season_year || ""}
+                            </div>
+                          </div>
+
+                          <div className="p-3 rounded-xl bg-[#151a26] border border-[#21293c]">
+                            <span className="text-[10px] text-gray-500 uppercase font-semibold">Source Material</span>
+                            <div className="text-sm font-bold text-white mt-0.5">
+                              {selectedAnime.source || "Manga"}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Next Airing Episode Banner (if ongoing) */}
+                        {selectedAnime.next_airing_at && (
+                          <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between">
+                            <div className="flex items-center gap-2.5">
+                              <Clock className="w-4 h-4 text-emerald-400 animate-pulse" />
+                              <span className="text-xs font-semibold text-emerald-300">
+                                Episode {selectedAnime.next_airing_episode} Scheduled Release
+                              </span>
+                            </div>
+                            <span className="text-xs font-mono text-emerald-400 font-bold">
+                              {new Date(selectedAnime.next_airing_at).toLocaleString()}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Synopsis */}
+                        <div>
+                          <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-2 flex items-center gap-2">
+                            <span>Plot Synopsis</span>
+                            <span className="text-[10px] text-gray-500 font-normal">(Stored in Cloud SQL)</span>
+                          </h4>
+                          <div
+                            className="p-4 rounded-2xl bg-[#0e111a] border border-[#1d2334] text-xs leading-relaxed text-gray-300 font-sans whitespace-pre-line"
+                            dangerouslySetInnerHTML={{
+                              __html: selectedAnime.synopsis || "No synopsis available for this title.",
+                            }}
+                          />
+                        </div>
+
+                        {/* Genres */}
+                        {selectedAnime.genres && selectedAnime.genres.length > 0 && (
+                          <div>
+                            <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-2">Genres</h4>
+                            <div className="flex flex-wrap gap-1.5">
+                              {selectedAnime.genres.map((genre: string) => (
+                                <span
+                                  key={genre}
+                                  className="px-2.5 py-1 rounded-lg bg-[#181d2a] text-blue-400 border border-[#252c3e] text-xs font-semibold"
+                                >
+                                  {genre}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* SUBTAB 2: CAST & VOICE ACTORS */}
+                    {inspectTab === "cast" && (
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                            Characters & Japanese Seiyuu
+                          </h4>
+                          <span className="text-[11px] text-gray-400 font-mono">
+                            {selectedAnime.characters?.length || 0} cast members mapped
+                          </span>
+                        </div>
+
+                        {(!selectedAnime.characters || selectedAnime.characters.length === 0) ? (
+                          <div className="p-8 text-center text-gray-500 bg-[#0e111a] rounded-2xl border border-[#1d2334]">
+                            No characters mapped for this title yet.
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            {selectedAnime.characters.map((item, idx) => (
+                              <div
+                                key={idx}
+                                className="p-3 rounded-xl bg-[#141824] border border-[#202738] flex items-center justify-between gap-3"
+                              >
+                                {/* Character Info */}
+                                <div className="flex items-center gap-2.5 min-w-0">
+                                  <div className="relative w-11 h-11 rounded-lg overflow-hidden bg-gray-900 shrink-0">
+                                    {item.character_image ? (
+                                      <Image
+                                        src={item.character_image}
+                                        alt={item.character_name}
+                                        fill
+                                        className="object-cover"
+                                      />
+                                    ) : (
+                                      <div className="w-full h-full flex items-center justify-center text-[8px] text-gray-600">
+                                        N/A
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <h5 className="text-xs font-bold text-white truncate">
+                                      {item.character_name}
+                                    </h5>
+                                    <span className="text-[10px] text-gray-500 uppercase font-mono">
+                                      {item.role || "MAIN"}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* Voice Actor Info */}
+                                <div className="flex items-center gap-2.5 text-right shrink-0">
+                                  <div className="min-w-0">
+                                    <h5 className="text-xs font-bold text-amber-300 truncate">
+                                      {item.voice_actor_name || "TBA"}
+                                    </h5>
+                                    <span className="text-[10px] text-gray-500 font-mono">
+                                      Japanese VA
+                                    </span>
+                                  </div>
+                                  <div className="relative w-11 h-11 rounded-lg overflow-hidden bg-gray-900 shrink-0">
+                                    {item.voice_actor_image ? (
+                                      <Image
+                                        src={item.voice_actor_image}
+                                        alt=""
+                                        fill
+                                        className="object-cover"
+                                      />
+                                    ) : (
+                                      <div className="w-full h-full flex items-center justify-center text-[8px] text-gray-600">
+                                        N/A
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* SUBTAB 3: WHERE TO WATCH & AFFILIATES */}
+                    {inspectTab === "stream" && (
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                            Legal Streaming Destinations
+                          </h4>
+                          <span className="text-[11px] text-gray-400 font-mono">
+                            {selectedAnime.streaming_links?.length || 0} links active
+                          </span>
+                        </div>
+
+                        {(!selectedAnime.streaming_links || selectedAnime.streaming_links.length === 0) ? (
+                          <div className="p-8 text-center text-gray-500 bg-[#0e111a] rounded-2xl border border-[#1d2334]">
+                            No streaming links saved for this title yet.
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            {selectedAnime.streaming_links.map((link) => (
+                              <div
+                                key={link.id}
+                                className="p-3.5 rounded-xl bg-[#141824] border border-[#202738] flex items-center justify-between"
+                              >
+                                <div className="flex items-center gap-2.5">
+                                  <div className="p-2 rounded-lg bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                                    <Film className="w-4 h-4" />
+                                  </div>
+                                  <div>
+                                    <h5 className="text-xs font-bold text-white">
+                                      {link.platform_name}
+                                    </h5>
+                                    <span className="text-[10px] text-emerald-400 font-semibold">
+                                      Official Streaming Source
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <a
+                                  href={link.target_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-3 py-1.5 rounded-lg bg-[#181d2a] hover:bg-[#20273a] text-blue-400 text-xs font-semibold flex items-center gap-1 transition-colors"
+                                >
+                                  <span>Watch</span>
+                                  <ExternalLink className="w-3 h-3" />
+                                </a>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* SUBTAB 4: TRAILER */}
+                    {inspectTab === "trailer" && selectedAnime.youtube_trailer_id && (
+                      <div className="space-y-3">
+                        <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                          Official YouTube Trailer
+                        </h4>
+                        <div className="aspect-video w-full rounded-2xl overflow-hidden bg-black border border-[#232c42]">
+                          <iframe
+                            src={`https://www.youtube.com/embed/${selectedAnime.youtube_trailer_id}`}
+                            title="Trailer"
+                            className="w-full h-full border-0"
+                            allowFullScreen
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="px-6 py-4 bg-[#141824] border-t border-[#202738] flex items-center justify-between text-xs text-gray-500 font-mono">
+                <span>Ingested: {new Date(selectedAnime.created_at).toLocaleDateString()}</span>
+                <Link
+                  href={`/anime/${selectedAnime.anilist_id}`}
+                  target="_blank"
+                  className="text-blue-400 hover:text-blue-300 font-bold flex items-center gap-1"
+                >
+                  <span>Open Full Public View →</span>
+                </Link>
+              </div>
+            </div>
           </div>
         )}
       </main>

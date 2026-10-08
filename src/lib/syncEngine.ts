@@ -23,6 +23,7 @@ export const BULK_SYNC_QUERY = `
         description(asHtml: false)
         format
         status
+        source
         episodes
         duration
         season
@@ -36,6 +37,13 @@ export const BULK_SYNC_QUERY = `
         }
         bannerImage
         genres
+        tags {
+          id
+          name
+          rank
+          category
+          isMediaSpoiler
+        }
         studios(isMain: true) {
           nodes {
             id
@@ -51,13 +59,51 @@ export const BULK_SYNC_QUERY = `
           episode
           airingAt
         }
+        startDate {
+          year
+          month
+          day
+        }
+        endDate {
+          year
+          month
+          day
+        }
+        relations {
+          edges {
+            relationType
+            node {
+              id
+              title {
+                romaji
+                english
+              }
+              format
+              status
+            }
+          }
+        }
+        staff(perPage: 6) {
+          edges {
+            role
+            node {
+              id
+              name {
+                full
+              }
+              image {
+                large
+              }
+            }
+          }
+        }
         externalLinks {
           id
           site
           url
           type
         }
-        characters(perPage: 6, sort: ROLE) {
+        characters(perPage: 12, sort: ROLE) {
           edges {
             role
             node {
@@ -112,6 +158,17 @@ export async function upsertAnimeRecord(media: any) {
   const studiosJson = JSON.stringify(media.studios?.nodes || []);
   const genres = media.genres || [];
 
+  const source = media.source || null;
+  const tagsJson = JSON.stringify(media.tags || []);
+  const relationsJson = JSON.stringify(media.relations?.edges || []);
+  const staffJson = JSON.stringify(media.staff?.edges || []);
+  const startDate = media.startDate?.year
+    ? `${media.startDate.year}-${String(media.startDate.month || 1).padStart(2, "0")}-${String(media.startDate.day || 1).padStart(2, "0")}`
+    : null;
+  const endDate = media.endDate?.year
+    ? `${media.endDate.year}-${String(media.endDate.month || 1).padStart(2, "0")}-${String(media.endDate.day || 1).padStart(2, "0")}`
+    : null;
+
   // 1. Upsert Anime table
   const animeUpsertSql = `
     INSERT INTO anime (
@@ -119,20 +176,23 @@ export async function upsertAnimeRecord(media: any) {
       synopsis, format, status, season, season_year, episodes_count,
       episode_duration, score, popularity, cover_image_url, banner_image_url,
       accent_color, genres, studios, youtube_trailer_id,
-      next_airing_episode, next_airing_at, updated_at
+      next_airing_episode, next_airing_at, source, tags, relations, staff,
+      start_date, end_date, updated_at
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-      $16, $17, $18, $19, $20, $21, $22, $23, NOW()
+      $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, NOW()
     )
     ON CONFLICT (anilist_id) DO UPDATE SET
       title_english = EXCLUDED.title_english,
       title_romaji = EXCLUDED.title_romaji,
+      title_native = EXCLUDED.title_native,
       synopsis = EXCLUDED.synopsis,
       format = EXCLUDED.format,
       status = EXCLUDED.status,
       season = EXCLUDED.season,
       season_year = EXCLUDED.season_year,
       episodes_count = EXCLUDED.episodes_count,
+      episode_duration = EXCLUDED.episode_duration,
       score = EXCLUDED.score,
       popularity = EXCLUDED.popularity,
       cover_image_url = EXCLUDED.cover_image_url,
@@ -143,6 +203,12 @@ export async function upsertAnimeRecord(media: any) {
       youtube_trailer_id = EXCLUDED.youtube_trailer_id,
       next_airing_episode = EXCLUDED.next_airing_episode,
       next_airing_at = EXCLUDED.next_airing_at,
+      source = EXCLUDED.source,
+      tags = EXCLUDED.tags,
+      relations = EXCLUDED.relations,
+      staff = EXCLUDED.staff,
+      start_date = EXCLUDED.start_date,
+      end_date = EXCLUDED.end_date,
       updated_at = NOW()
     RETURNING id;
   `;
@@ -171,6 +237,12 @@ export async function upsertAnimeRecord(media: any) {
     trailerId,
     nextAiringEp,
     nextAiringDate,
+    source,
+    tagsJson,
+    relationsJson,
+    staffJson,
+    startDate,
+    endDate,
   ]);
 
   // 2. Upsert Characters & Voice Actors
@@ -272,7 +344,6 @@ export async function fetchAndSyncBatch(options: {
       sort: ["TRENDING_DESC"],
     };
   } else {
-    // Standard pagination
     variables = {
       ...variables,
       sort: ["POPULARITY_DESC"],
@@ -298,14 +369,12 @@ export async function fetchAndSyncBatch(options: {
   const mediaList = json.data?.Page?.media || [];
   const pageInfo = json.data?.Page?.pageInfo || {};
 
-  // Upsert each media item into Cloud SQL PostgreSQL
   let processedCount = 0;
   for (const item of mediaList) {
     await upsertAnimeRecord(item);
     processedCount++;
   }
 
-  // Record to sync audit logs
   await query(
     `
     INSERT INTO sync_logs (action, count_processed, status, details)
