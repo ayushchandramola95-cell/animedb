@@ -25,6 +25,10 @@ import {
   Tag,
   Clock,
   Video,
+  Calendar,
+  TrendingUp,
+  AlertCircle,
+  CheckCircle2,
 } from "lucide-react";
 import Navbar from "./Navbar";
 
@@ -115,11 +119,20 @@ export default function AdminDashboardClient() {
     "Ready to execute AniList GraphQL automated batch ingestion.",
   ]);
   const [batchRunning, setBatchRunning] = useState(false);
+  const [activeRunningMode, setActiveRunningMode] = useState<"years" | "ranking" | null>(null);
   const [batchPage, setBatchPage] = useState(1);
   const [batchStartPage, setBatchStartPage] = useState(1);
   const [batchTargetPages, setBatchTargetPages] = useState(400);
   const [batchSessionAdded, setBatchSessionAdded] = useState(0);
   const stopCrawlerRef = useRef(false);
+
+  // Year-by-Year crawler state
+  const [crawlerMode, setCrawlerMode] = useState<"years" | "ranking">("years");
+  const [startYear, setStartYear] = useState<number>(2026);
+  const [endYear, setEndYear] = useState<number>(1980);
+  const [currentCrawlingYear, setCurrentCrawlingYear] = useState<number>(2026);
+  const [yearPage, setYearPage] = useState<number>(1);
+  const [yearSessionAdded, setYearSessionAdded] = useState<number>(0);
 
   // Database browser state
   const [animeList, setAnimeList] = useState<AnimeRecord[]>([]);
@@ -248,9 +261,10 @@ export default function AdminDashboardClient() {
   const handleStartCrawler = async () => {
     stopCrawlerRef.current = false;
     setBatchRunning(true);
+    setActiveRunningMode("ranking");
     let p = batchStartPage;
-    let added = 0;
-    addLog(`🚀 Starting Autonomous Catalog Ingestion: Starting from Page ${p} up to Target Page ${batchTargetPages}...`);
+    let added = batchSessionAdded;
+    addLog(`🚀 Starting Global Popularity Ranking Ingestion: Starting from Page ${p} up to Target Page ${batchTargetPages}...`);
 
     while (!stopCrawlerRef.current && p <= batchTargetPages) {
       setBatchPage(p);
@@ -266,6 +280,10 @@ export default function AdminDashboardClient() {
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
           addLog(`⚠️ Page ${p} API notice: ${errData.error || res.statusText}`);
+          if (errData.error?.includes("5000 entries") || errData.error?.includes("Page depth")) {
+            addLog(`🛑 AniList 5,000 Depth Limit reached at Page ${p}! Switch to "Year-by-Year Deep Catalog" mode to continue.`);
+            break;
+          }
           await new Promise((r) => setTimeout(r, 4000));
           continue;
         }
@@ -280,6 +298,10 @@ export default function AdminDashboardClient() {
           setBatchStartPage(p);
         } else {
           addLog(`✗ Page ${p} error: ${data.error}`);
+          if (data.error?.includes("5000 entries") || data.error?.includes("Page depth")) {
+            addLog(`🛑 AniList 5,000 Depth Limit reached at Page ${p}! Switch to "Year-by-Year Deep Catalog" mode to continue.`);
+            break;
+          }
           await new Promise((r) => setTimeout(r, 4000));
         }
       } catch (err: any) {
@@ -301,11 +323,94 @@ export default function AdminDashboardClient() {
     }
 
     setBatchRunning(false);
+    setActiveRunningMode(null);
   };
 
   const handlePauseCrawler = () => {
     stopCrawlerRef.current = true;
     addLog("⏸ Pausing crawler after current batch finishes...");
+  };
+
+  // Chronological Year-by-Year Crawler (Bypasses AniList 5,000 Depth Limit)
+  const handleStartYearCrawler = async () => {
+    if (startYear < endYear) {
+      addLog("⚠️ Start Year must be greater than or equal to End Year (we crawl backwards in time).");
+      return;
+    }
+
+    stopCrawlerRef.current = false;
+    setBatchRunning(true);
+    setActiveRunningMode("years");
+    let y = startYear;
+    let added = yearSessionAdded;
+    addLog(`🚀 Starting Chronological Year Crawler: Crawling release years ${y} down to ${endYear}...`);
+
+    while (!stopCrawlerRef.current && y >= endYear) {
+      setCurrentCrawlingYear(y);
+      addLog(`[Year ${y}] Starting deep crawl for release year ${y}...`);
+
+      let p = 1;
+      let hasMore = true;
+
+      while (!stopCrawlerRef.current && hasMore) {
+        setYearPage(p);
+        addLog(`[Year ${y}] Fetching Page ${p} (25 anime / batch)...`);
+
+        try {
+          const res = await fetch("/api/admin/sync-anilist", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "year", year: y, page: p, perPage: 25 }),
+          });
+
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            addLog(`⚠️ Year ${y} Page ${p} notice: ${errData.error || res.statusText}`);
+            await new Promise((r) => setTimeout(r, 4000));
+            continue;
+          }
+
+          const data = await res.json();
+          if (data.success) {
+            added += data.count;
+            setYearSessionAdded(added);
+            addLog(`✓ Year ${y} Page ${p}: Ingested ${data.count} titles into PostgreSQL (${data.metrics?.executionTimeMs}ms)`);
+            await fetchStats();
+
+            hasMore = Boolean(data.pageInfo?.hasNextPage);
+            p++;
+          } else {
+            addLog(`✗ Year ${y} Page ${p} error: ${data.error}`);
+            await new Promise((r) => setTimeout(r, 4000));
+          }
+        } catch (err: any) {
+          addLog(`✗ Network warning on Year ${y} Page ${p}: ${err.message}. Retrying in 4s...`);
+          await new Promise((r) => setTimeout(r, 4000));
+        }
+
+        if (stopCrawlerRef.current) break;
+
+        // 1.2s delay to comply with AniList 90 req/min rule
+        await new Promise((r) => setTimeout(r, 1200));
+      }
+
+      if (stopCrawlerRef.current) {
+        addLog(`⏸ Crawler paused at Year ${y} (Page ${p}). Ready to resume anytime!`);
+        setStartYear(y);
+        break;
+      }
+
+      addLog(`🎉 Year ${y} complete! Moving to next year...`);
+      y--;
+      setStartYear(y);
+    }
+
+    if (y < endYear && !stopCrawlerRef.current) {
+      addLog(`🏆 Full Chronological Ingestion Complete down to ${endYear}! All historical anime stored.`);
+    }
+
+    setBatchRunning(false);
+    setActiveRunningMode(null);
   };
 
   // Helper for studios display
@@ -638,7 +743,7 @@ export default function AdminDashboardClient() {
                 <div className="flex items-center gap-2">
                   <div className="px-3.5 py-2 rounded-xl bg-[#171d2b] border border-[#232c40] flex flex-col items-end">
                     <span className="text-[10px] text-gray-400 uppercase font-mono">This Session</span>
-                    <span className="text-sm font-bold text-emerald-400">+{batchSessionAdded} Anime</span>
+                    <span className="text-sm font-bold text-emerald-400">+{yearSessionAdded + batchSessionAdded} Anime</span>
                   </div>
                   <div className="px-3.5 py-2 rounded-xl bg-[#171d2b] border border-[#232c40] flex flex-col items-end">
                     <span className="text-[10px] text-gray-400 uppercase font-mono">Total In DB</span>
@@ -657,79 +762,293 @@ export default function AdminDashboardClient() {
                 </div>
                 <div className="w-full bg-[#161c29] rounded-full h-3 overflow-hidden p-0.5 border border-[#232c40]">
                   <div
-                    className="bg-gradient-to-r from-blue-500 to-emerald-400 h-2 rounded-full transition-all duration-500 shadow-sm"
+                    className="bg-gradient-to-r from-blue-500 via-purple-500 to-emerald-400 h-2 rounded-full transition-all duration-500 shadow-sm"
                     style={{ width: `${Math.min(100, Math.max(1, (stats.totalAnime / 20000) * 100))}%` }}
                   />
                 </div>
               </div>
 
-              {/* Controls Grid */}
-              <div className="pt-4 border-t border-[#1d2334] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div className="flex flex-wrap items-center gap-4">
-                  {/* Start / Resume Page Input */}
-                  <div className="flex items-center gap-2 text-xs">
-                    <span className="text-gray-400 font-medium">Start Page:</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={800}
-                      value={batchStartPage}
-                      onChange={(e) => setBatchStartPage(Math.max(1, Number(e.target.value)))}
-                      disabled={batchRunning}
-                      className="w-20 px-2.5 py-1.5 rounded-lg bg-[#0e111a] border border-[#232c40] text-white text-xs font-mono font-bold focus:outline-none focus:border-blue-500 disabled:opacity-50"
-                    />
-                  </div>
-
-                  {/* Target Pages Selector */}
-                  <div className="flex items-center gap-2 text-xs">
-                    <span className="text-gray-400 font-medium">Target:</span>
-                    <select
-                      value={batchTargetPages}
-                      onChange={(e) => setBatchTargetPages(Number(e.target.value))}
-                      disabled={batchRunning}
-                      className="px-3 py-1.5 rounded-lg bg-[#0e111a] border border-[#232c40] text-white text-xs font-semibold focus:outline-none disabled:opacity-50"
-                    >
-                      <option value={40}>40 Pages (~1,000 anime)</option>
-                      <option value={100}>100 Pages (~2,500 anime)</option>
-                      <option value={200}>200 Pages (~5,000 anime)</option>
-                      <option value={400}>400 Pages (~10,000 anime)</option>
-                      <option value={800}>800 Pages (All 20,000 anime)</option>
-                    </select>
-                  </div>
-                </div>
-
-                {/* Primary Action Button (Start / Pause) */}
-                <div className="flex items-center gap-3">
-                  {batchRunning ? (
-                    <button
-                      onClick={handlePauseCrawler}
-                      className="px-6 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold transition-all flex items-center gap-2 shadow-lg shadow-amber-600/30"
-                    >
-                      <Pause className="w-4 h-4 fill-white" />
-                      <span>Pause Crawler</span>
-                    </button>
-                  ) : (
-                    <button
-                      onClick={handleStartCrawler}
-                      className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 hover:from-emerald-500 hover:to-blue-500 text-white text-xs font-bold transition-all flex items-center gap-2 shadow-lg shadow-emerald-600/30"
-                    >
-                      <Play className="w-4 h-4 fill-white" />
-                      <span>Start Autonomous Ingestion</span>
-                    </button>
+              {/* Crawler Mode Switcher Cards */}
+              <div className="pt-2">
+                <div className="text-xs font-semibold text-gray-300 mb-2.5 flex items-center justify-between">
+                  <span>Choose Ingestion Strategy:</span>
+                  {batchRunning && (
+                    <span className="text-[11px] text-amber-400 font-medium flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+                      Crawler active ({activeRunningMode === "years" ? "Year Mode" : "Ranking Mode"}) — Pause to switch modes
+                    </span>
                   )}
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                  {/* Mode Card 1: Year-by-Year */}
+                  <div
+                    onClick={() => !batchRunning && setCrawlerMode("years")}
+                    className={`p-4 rounded-2xl text-left transition-all border relative flex flex-col justify-between ${
+                      crawlerMode === "years"
+                        ? "bg-gradient-to-br from-purple-950/40 via-[#151928] to-[#121622] border-purple-500/60 shadow-lg shadow-purple-950/30 ring-1 ring-purple-500/30"
+                        : "bg-[#10141e] border-[#1d2435] hover:border-[#2a344d] opacity-75 hover:opacity-100"
+                    } ${batchRunning ? "cursor-not-allowed" : "cursor-pointer"}`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-bold">
+                          <Sparkles className="w-3 h-3 text-purple-400" />
+                          <span>RECOMMENDED • BYPASSES 5K LIMIT</span>
+                        </div>
+                        {crawlerMode === "years" && (
+                          <span className="w-2.5 h-2.5 rounded-full bg-purple-400 shadow-sm shadow-purple-400"></span>
+                        )}
+                      </div>
+                      <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                        <Calendar className="w-4 h-4 text-purple-400" />
+                        <span>Year-by-Year Deep Catalog Crawler</span>
+                      </h4>
+                      <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
+                        Crawls release years sequentially (2026 down to 1980). Each year has only 200–450 releases, so AniList pagination resets every year and NEVER hits the 5,000-entry ceiling.
+                      </p>
+                    </div>
+
+                    <div className="mt-3 pt-2.5 border-t border-purple-500/10 flex items-center justify-between text-[11px]">
+                      <span className="text-purple-300 font-medium">Safe 1.2s delay per batch</span>
+                      <span className="font-mono text-emerald-400 font-semibold">Captures All 20,000+ Titles</span>
+                    </div>
+                  </div>
+
+                  {/* Mode Card 2: Global Ranking */}
+                  <div
+                    onClick={() => !batchRunning && setCrawlerMode("ranking")}
+                    className={`p-4 rounded-2xl text-left transition-all border relative flex flex-col justify-between ${
+                      crawlerMode === "ranking"
+                        ? "bg-gradient-to-br from-blue-950/40 via-[#151928] to-[#121622] border-blue-500/60 shadow-lg shadow-blue-950/30 ring-1 ring-blue-500/30"
+                        : "bg-[#10141e] border-[#1d2435] hover:border-[#2a344d] opacity-75 hover:opacity-100"
+                    } ${batchRunning ? "cursor-not-allowed" : "cursor-pointer"}`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30 text-[10px] font-bold">
+                          <TrendingUp className="w-3 h-3 text-blue-400" />
+                          <span>GLOBAL POPULARITY RANKING</span>
+                        </div>
+                        {stats.totalAnime >= 5000 && (
+                          <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-semibold">
+                            5k Limit Reached
+                          </span>
+                        )}
+                      </div>
+                      <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-blue-400" />
+                        <span>Standard Popularity Ranking</span>
+                      </h4>
+                      <p className="text-xs text-gray-400 mt-1.5 leading-relaxed">
+                        Crawls all media sorted globally by popularity. AniList hard-caps pagination on this query at Page 200 (5,000 entries max).
+                      </p>
+                    </div>
+
+                    <div className="mt-3 pt-2.5 border-t border-blue-500/10 flex items-center justify-between text-[11px]">
+                      <span className="text-amber-400/90 font-medium">Capped at Page 200 (5,000 items)</span>
+                      <span className="font-mono text-gray-400">Pages 1 → 200</span>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              {/* Active Crawl Status Banner */}
-              {batchRunning && (
-                <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-between text-xs animate-pulse">
-                  <div className="flex items-center gap-2 text-blue-300 font-semibold">
-                    <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
-                    <span>Actively crawling Page {batchPage} of {batchTargetPages}...</span>
+              {/* Mode-Specific Controls */}
+              {crawlerMode === "years" ? (
+                /* Year-by-Year Mode Panel */
+                <div className="p-4 sm:p-5 rounded-2xl bg-[#0f131d] border border-purple-500/20 flex flex-col gap-4">
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                    <div className="flex flex-wrap items-center gap-4">
+                      {/* Start Year Input */}
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-gray-300 font-medium">Start Year:</span>
+                        <input
+                          type="number"
+                          min={1970}
+                          max={2030}
+                          value={startYear}
+                          onChange={(e) => setStartYear(Number(e.target.value))}
+                          disabled={batchRunning}
+                          className="w-24 px-3 py-1.5 rounded-lg bg-[#0a0d14] border border-[#232c40] text-white text-xs font-mono font-bold focus:outline-none focus:border-purple-500 disabled:opacity-50"
+                        />
+                      </div>
+
+                      {/* End Year Input */}
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-gray-300 font-medium">End Year:</span>
+                        <input
+                          type="number"
+                          min={1960}
+                          max={2030}
+                          value={endYear}
+                          onChange={(e) => setEndYear(Number(e.target.value))}
+                          disabled={batchRunning}
+                          className="w-24 px-3 py-1.5 rounded-lg bg-[#0a0d14] border border-[#232c40] text-white text-xs font-mono font-bold focus:outline-none focus:border-purple-500 disabled:opacity-50"
+                        />
+                      </div>
+
+                      {/* Quick Presets */}
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] text-gray-500 mr-1">Presets:</span>
+                        <button
+                          type="button"
+                          onClick={() => { setStartYear(2026); setEndYear(2020); }}
+                          disabled={batchRunning}
+                          className="px-2.5 py-1 rounded bg-[#171c28] hover:bg-[#1f2638] text-[11px] text-gray-300 hover:text-white border border-[#222a3d] transition-colors disabled:opacity-50"
+                        >
+                          2026→2020
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setStartYear(2026); setEndYear(2010); }}
+                          disabled={batchRunning}
+                          className="px-2.5 py-1 rounded bg-[#171c28] hover:bg-[#1f2638] text-[11px] text-gray-300 hover:text-white border border-[#222a3d] transition-colors disabled:opacity-50"
+                        >
+                          2026→2010
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setStartYear(2026); setEndYear(1980); }}
+                          disabled={batchRunning}
+                          className="px-2.5 py-1 rounded bg-[#171c28] hover:bg-[#1f2638] text-[11px] text-gray-300 hover:text-white border border-[#222a3d] transition-colors disabled:opacity-50"
+                        >
+                          2026→1980 (Full)
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Action Button: Start or Pause Year Crawler */}
+                    <div>
+                      {batchRunning && activeRunningMode === "years" ? (
+                        <button
+                          onClick={handlePauseCrawler}
+                          className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-600/30"
+                        >
+                          <Pause className="w-4 h-4 fill-white" />
+                          <span>Pause Year Crawler</span>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={handleStartYearCrawler}
+                          disabled={batchRunning}
+                          className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 text-white text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30 disabled:opacity-50"
+                        >
+                          <Play className="w-4 h-4 fill-white" />
+                          <span>Start Year-by-Year Ingestion ({startYear} → {endYear})</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <span className="text-[11px] font-mono text-gray-400">
-                    Auto-throttled at 1.2s/batch
-                  </span>
+
+                  {/* Active Banner when Year Crawler is Running */}
+                  {batchRunning && activeRunningMode === "years" && (
+                    <div className="p-3.5 rounded-xl bg-purple-500/10 border border-purple-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2 text-purple-200 font-semibold">
+                        <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
+                        <span>
+                          Actively Crawling: Release Year <strong className="text-white text-sm">{currentCrawlingYear}</strong> (Page {yearPage})
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-3 text-[11px] font-mono text-purple-300/80">
+                        <span>+{yearSessionAdded} added this session</span>
+                        <span>•</span>
+                        <span>Throttled at 1.2s/batch</span>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="text-[11px] text-gray-400 flex items-center gap-1.5 pt-1">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span>
+                      Zero duplicates guarantee: Titles already in the database have their details, characters, voice actors, and streaming links updated via PostgreSQL ON CONFLICT (anilist_id) DO UPDATE.
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                /* Standard Ranking Mode Panel */
+                <div className="p-4 sm:p-5 rounded-2xl bg-[#0f131d] border border-blue-500/20 flex flex-col gap-4">
+                  {stats.totalAnime >= 5000 && (
+                    <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-2.5 text-xs text-amber-200">
+                      <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="text-amber-300">AniList 5,000-entry Limit Reached:</strong> You already have {stats.totalAnime.toLocaleString()} anime in Cloud SQL. AniList strictly rejects global queries past Page 200 (5,000 entries) with HTTP 400.
+                        <button
+                          type="button"
+                          onClick={() => setCrawlerMode("years")}
+                          className="ml-2 underline font-bold text-white hover:text-purple-300"
+                        >
+                          Switch to Year-by-Year mode →
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex flex-wrap items-center gap-4">
+                      {/* Start Page */}
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-gray-300 font-medium">Start Page:</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={200}
+                          value={batchStartPage}
+                          onChange={(e) => setBatchStartPage(Math.max(1, Number(e.target.value)))}
+                          disabled={batchRunning}
+                          className="w-20 px-2.5 py-1.5 rounded-lg bg-[#0a0d14] border border-[#232c40] text-white text-xs font-mono font-bold focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                        />
+                      </div>
+
+                      {/* Target Pages */}
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-gray-300 font-medium">Target:</span>
+                        <select
+                          value={batchTargetPages}
+                          onChange={(e) => setBatchTargetPages(Number(e.target.value))}
+                          disabled={batchRunning}
+                          className="px-3 py-1.5 rounded-lg bg-[#0a0d14] border border-[#232c40] text-white text-xs font-semibold focus:outline-none disabled:opacity-50"
+                        >
+                          <option value={40}>40 Pages (~1,000 anime)</option>
+                          <option value={100}>100 Pages (~2,500 anime)</option>
+                          <option value={200}>200 Pages (Max 5,000 anime limit)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Action Button: Start or Pause Ranking Crawler */}
+                    <div>
+                      {batchRunning && activeRunningMode === "ranking" ? (
+                        <button
+                          onClick={handlePauseCrawler}
+                          className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-600/30"
+                        >
+                          <Pause className="w-4 h-4 fill-white" />
+                          <span>Pause Crawler</span>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={handleStartCrawler}
+                          disabled={batchRunning}
+                          className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 hover:from-emerald-500 hover:to-blue-500 text-white text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/30 disabled:opacity-50"
+                        >
+                          <Play className="w-4 h-4 fill-white" />
+                          <span>Start Ranking Ingestion</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Active Banner when Ranking Crawler is Running */}
+                  {batchRunning && activeRunningMode === "ranking" && (
+                    <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-between text-xs animate-pulse">
+                      <div className="flex items-center gap-2 text-blue-300 font-semibold">
+                        <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
+                        <span>Actively crawling Page {batchPage} of {batchTargetPages}...</span>
+                      </div>
+                      <span className="text-[11px] font-mono text-gray-400">
+                        Throttled at 1.2s/batch
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

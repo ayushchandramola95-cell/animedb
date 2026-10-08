@@ -313,23 +313,30 @@ export async function upsertAnimeRecord(media: any) {
 }
 
 export async function fetchAndSyncBatch(options: {
-  action: "test" | "seasonal" | "top" | "page";
+  action: "test" | "seasonal" | "top" | "page" | "year";
   page?: number;
   perPage?: number;
+  year?: number;
 }) {
-  const { action, page = 1, perPage = 20 } = options;
-  const { season, year } = getCurrentSeason();
+  const { action, page = 1, perPage = 20, year: inputYear } = options;
+  const { season, year: currentYear } = getCurrentSeason();
 
   let variables: Record<string, unknown> = {
     page,
     perPage,
   };
 
-  if (action === "seasonal") {
+  if (action === "year" && inputYear) {
+    variables = {
+      ...variables,
+      seasonYear: inputYear,
+      sort: ["POPULARITY_DESC"],
+    };
+  } else if (action === "seasonal") {
     variables = {
       ...variables,
       season,
-      seasonYear: year,
+      seasonYear: currentYear,
       sort: ["POPULARITY_DESC"],
     };
   } else if (action === "top") {

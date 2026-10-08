@@ -9,8 +9,9 @@ export async function POST(req: NextRequest) {
     const action = body.action || "test";
     const page = Number(body.page) || 1;
     const perPage = Math.min(Number(body.perPage) || 20, 50);
+    const year = body.year ? Number(body.year) : undefined;
 
-    const result = await fetchAndSyncBatch({ action, page, perPage });
+    const result = await fetchAndSyncBatch({ action, page, perPage, year });
     const executionTimeMs = Date.now() - startTime;
 
     return NextResponse.json({
