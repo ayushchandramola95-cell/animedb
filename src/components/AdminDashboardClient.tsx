@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import {
@@ -11,6 +11,7 @@ import {
   Search,
   RefreshCw,
   Play,
+  Pause,
   Layers,
   ShieldCheck,
   Eye,
@@ -115,7 +116,10 @@ export default function AdminDashboardClient() {
   ]);
   const [batchRunning, setBatchRunning] = useState(false);
   const [batchPage, setBatchPage] = useState(1);
-  const [batchMaxPages, setBatchMaxPages] = useState(5);
+  const [batchStartPage, setBatchStartPage] = useState(1);
+  const [batchTargetPages, setBatchTargetPages] = useState(400);
+  const [batchSessionAdded, setBatchSessionAdded] = useState(0);
+  const stopCrawlerRef = useRef(false);
 
   // Database browser state
   const [animeList, setAnimeList] = useState<AnimeRecord[]>([]);
@@ -240,41 +244,68 @@ export default function AdminDashboardClient() {
     }
   };
 
-  // Automated Multi-Page Batch Crawler
-  const runMultiPageBatch = async () => {
+  // Automated Full-Catalog Crawler with Pause & Resume
+  const handleStartCrawler = async () => {
+    stopCrawlerRef.current = false;
     setBatchRunning(true);
-    addLog(`Starting Automated Multi-Page Crawler: Pages 1 to ${batchMaxPages}...`);
+    let p = batchStartPage;
+    let added = 0;
+    addLog(`🚀 Starting Autonomous Catalog Ingestion: Starting from Page ${p} up to Target Page ${batchTargetPages}...`);
 
-    for (let p = 1; p <= batchMaxPages; p++) {
+    while (!stopCrawlerRef.current && p <= batchTargetPages) {
       setBatchPage(p);
-      addLog(`[Batch Job] Crawling & Syncing Page ${p} of ${batchMaxPages}...`);
+      addLog(`[Batch Job] Ingesting Page ${p} of ${batchTargetPages} (25 anime / batch)...`);
+
       try {
         const res = await fetch("/api/admin/sync-anilist", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "top", page: p, perPage: 25 }),
+          body: JSON.stringify({ action: "page", page: p, perPage: 25 }),
         });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          addLog(`⚠️ Page ${p} API notice: ${errData.error || res.statusText}`);
+          await new Promise((r) => setTimeout(r, 4000));
+          continue;
+        }
+
         const data = await res.json();
         if (data.success) {
-          addLog(`✓ Page ${p}: Ingested ${data.count} titles into PostgreSQL.`);
+          added += data.count;
+          setBatchSessionAdded(added);
+          addLog(`✓ Page ${p}: Ingested ${data.count} titles into PostgreSQL (${data.metrics?.executionTimeMs}ms)`);
           await fetchStats();
+          p++;
+          setBatchStartPage(p);
         } else {
-          addLog(`✗ Page ${p} Error: ${data.error}`);
-          break;
+          addLog(`✗ Page ${p} error: ${data.error}`);
+          await new Promise((r) => setTimeout(r, 4000));
         }
       } catch (err: any) {
-        addLog(`✗ Page ${p} Failed: ${err.message}`);
+        addLog(`✗ Network warning on Page ${p}: ${err.message}. Retrying in 4s...`);
+        await new Promise((r) => setTimeout(r, 4000));
+      }
+
+      if (stopCrawlerRef.current) {
+        addLog(`⏸ Crawler gracefully paused by user at Page ${p}. Ready to resume anytime.`);
         break;
       }
 
-      if (p < batchMaxPages) {
-        addLog(`Sleeping 1.5s to respect AniList API rate limits...`);
-        await new Promise((resolve) => setTimeout(resolve, 1500));
-      }
+      // 1.2s polite delay to respect AniList 90 req/min limit
+      await new Promise((r) => setTimeout(r, 1200));
     }
 
-    addLog(`Batch Crawl Completed!`);
+    if (p > batchTargetPages) {
+      addLog(`🎉 Target of ${batchTargetPages} pages completed successfully!`);
+    }
+
     setBatchRunning(false);
+  };
+
+  const handlePauseCrawler = () => {
+    stopCrawlerRef.current = true;
+    addLog("⏸ Pausing crawler after current batch finishes...");
   };
 
   // Helper for studios display
@@ -586,60 +617,119 @@ export default function AdminDashboardClient() {
         {/* ========================================================================= */}
         {activeTab === "ingest" && (
           <div className="flex flex-col gap-6">
-            <div className="p-6 rounded-2xl bg-[#121622] border border-[#1f2638] flex flex-col gap-4">
+            {/* Master Ingestion Controller */}
+            <div className="p-6 rounded-3xl bg-[#121622] border border-[#1f2638] flex flex-col gap-5 shadow-xl">
+              {/* Header & Global Progress */}
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
-                  <h3 className="text-base font-bold text-white flex items-center gap-2">
-                    <Zap className="w-4 h-4 text-amber-400" />
-                    <span>Automated Multi-Page Ingestion Crawler</span>
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px] font-bold mb-1.5">
+                    <Sparkles className="w-3 h-3" />
+                    <span>Autonomous Full Catalog Engine</span>
+                  </div>
+                  <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                    <span>Full-Catalog Ingestion Control Center</span>
                   </h3>
-                  <p className="text-xs text-gray-400 mt-1">
-                    Sequentially crawls AniList pages and stores anime, characters, and stream destinations into Cloud SQL with automatic rate-limit throttling (1.5s delay).
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    Sequentially crawls AniList GraphQL and populates Google Cloud SQL with zero duplicates (safe 1.2s throttle).
                   </p>
                 </div>
 
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-2 text-xs text-gray-300">
-                    <span>Crawl Pages:</span>
-                    <select
-                      value={batchMaxPages}
-                      onChange={(e) => setBatchMaxPages(Number(e.target.value))}
-                      disabled={batchRunning}
-                      className="px-2.5 py-1.5 rounded-lg bg-[#181e2c] border border-[#273044] text-white text-xs font-semibold"
-                    >
-                      <option value={3}>3 Pages (75 anime)</option>
-                      <option value={5}>5 Pages (125 anime)</option>
-                      <option value={10}>10 Pages (250 anime)</option>
-                      <option value={20}>20 Pages (500 anime)</option>
-                    </select>
+                {/* Session Added Badge */}
+                <div className="flex items-center gap-2">
+                  <div className="px-3.5 py-2 rounded-xl bg-[#171d2b] border border-[#232c40] flex flex-col items-end">
+                    <span className="text-[10px] text-gray-400 uppercase font-mono">This Session</span>
+                    <span className="text-sm font-bold text-emerald-400">+{batchSessionAdded} Anime</span>
                   </div>
-
-                  <button
-                    onClick={runMultiPageBatch}
-                    disabled={batchRunning}
-                    className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white text-xs font-bold transition-all flex items-center gap-2 disabled:opacity-50 shadow-lg shadow-blue-600/30"
-                  >
-                    {batchRunning ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin text-white" />
-                        <span>Crawling Page {batchPage}/{batchMaxPages}...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Play className="w-4 h-4 text-white" />
-                        <span>Start Automated Crawler</span>
-                      </>
-                    )}
-                  </button>
+                  <div className="px-3.5 py-2 rounded-xl bg-[#171d2b] border border-[#232c40] flex flex-col items-end">
+                    <span className="text-[10px] text-gray-400 uppercase font-mono">Total In DB</span>
+                    <span className="text-sm font-bold text-blue-400">{stats.totalAnime.toLocaleString()} / 20k</span>
+                  </div>
                 </div>
               </div>
 
-              {batchRunning && (
-                <div className="w-full bg-[#181e2c] rounded-full h-2 overflow-hidden mt-2">
+              {/* Progress Bar towards 20,000 anime */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-xs text-gray-400">
+                  <span>Catalog Ingestion Progress</span>
+                  <span className="font-mono text-white font-bold">
+                    {((stats.totalAnime / 20000) * 100).toFixed(1)}% of 20,000 anime
+                  </span>
+                </div>
+                <div className="w-full bg-[#161c29] rounded-full h-3 overflow-hidden p-0.5 border border-[#232c40]">
                   <div
-                    className="bg-blue-500 h-2 rounded-full transition-all duration-300"
-                    style={{ width: `${(batchPage / batchMaxPages) * 100}%` }}
+                    className="bg-gradient-to-r from-blue-500 to-emerald-400 h-2 rounded-full transition-all duration-500 shadow-sm"
+                    style={{ width: `${Math.min(100, Math.max(1, (stats.totalAnime / 20000) * 100))}%` }}
                   />
+                </div>
+              </div>
+
+              {/* Controls Grid */}
+              <div className="pt-4 border-t border-[#1d2334] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex flex-wrap items-center gap-4">
+                  {/* Start / Resume Page Input */}
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-gray-400 font-medium">Start Page:</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={800}
+                      value={batchStartPage}
+                      onChange={(e) => setBatchStartPage(Math.max(1, Number(e.target.value)))}
+                      disabled={batchRunning}
+                      className="w-20 px-2.5 py-1.5 rounded-lg bg-[#0e111a] border border-[#232c40] text-white text-xs font-mono font-bold focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                    />
+                  </div>
+
+                  {/* Target Pages Selector */}
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-gray-400 font-medium">Target:</span>
+                    <select
+                      value={batchTargetPages}
+                      onChange={(e) => setBatchTargetPages(Number(e.target.value))}
+                      disabled={batchRunning}
+                      className="px-3 py-1.5 rounded-lg bg-[#0e111a] border border-[#232c40] text-white text-xs font-semibold focus:outline-none disabled:opacity-50"
+                    >
+                      <option value={40}>40 Pages (~1,000 anime)</option>
+                      <option value={100}>100 Pages (~2,500 anime)</option>
+                      <option value={200}>200 Pages (~5,000 anime)</option>
+                      <option value={400}>400 Pages (~10,000 anime)</option>
+                      <option value={800}>800 Pages (All 20,000 anime)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Primary Action Button (Start / Pause) */}
+                <div className="flex items-center gap-3">
+                  {batchRunning ? (
+                    <button
+                      onClick={handlePauseCrawler}
+                      className="px-6 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold transition-all flex items-center gap-2 shadow-lg shadow-amber-600/30"
+                    >
+                      <Pause className="w-4 h-4 fill-white" />
+                      <span>Pause Crawler</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleStartCrawler}
+                      className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-blue-600 hover:from-emerald-500 hover:to-blue-500 text-white text-xs font-bold transition-all flex items-center gap-2 shadow-lg shadow-emerald-600/30"
+                    >
+                      <Play className="w-4 h-4 fill-white" />
+                      <span>Start Autonomous Ingestion</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Active Crawl Status Banner */}
+              {batchRunning && (
+                <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-between text-xs animate-pulse">
+                  <div className="flex items-center gap-2 text-blue-300 font-semibold">
+                    <Loader2 className="w-4 h-4 animate-spin text-blue-400" />
+                    <span>Actively crawling Page {batchPage} of {batchTargetPages}...</span>
+                  </div>
+                  <span className="text-[11px] font-mono text-gray-400">
+                    Auto-throttled at 1.2s/batch
+                  </span>
                 </div>
               )}
             </div>
