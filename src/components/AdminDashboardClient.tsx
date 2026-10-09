@@ -406,7 +406,9 @@ export default function AdminDashboardClient() {
     }
 
     if (y < endYear && !stopCrawlerRef.current) {
-      addLog(`🏆 Full Chronological Ingestion Complete down to ${endYear}! All historical anime stored.`);
+      addLog(`🏆 Full Chronological Ingestion Complete down to ${endYear}! Ready to continue into older vintage classics.`);
+      setStartYear(y);
+      setEndYear(Math.max(1940, y - 20));
     }
 
     setBatchRunning(false);
@@ -863,12 +865,12 @@ export default function AdminDashboardClient() {
                         <span className="text-gray-300 font-medium">Start Year:</span>
                         <input
                           type="number"
-                          min={1970}
+                          min={1917}
                           max={2030}
                           value={startYear}
                           onChange={(e) => setStartYear(Number(e.target.value))}
                           disabled={batchRunning}
-                          className="w-24 px-3 py-1.5 rounded-lg bg-[#0a0d14] border border-[#232c40] text-white text-xs font-mono font-bold focus:outline-none focus:border-purple-500 disabled:opacity-50"
+                          className="w-20 px-3 py-1.5 rounded-lg bg-[#0a0d14] border border-[#232c40] text-white text-xs font-mono font-bold focus:outline-none focus:border-purple-500 disabled:opacity-50"
                         />
                       </div>
 
@@ -877,46 +879,54 @@ export default function AdminDashboardClient() {
                         <span className="text-gray-300 font-medium">End Year:</span>
                         <input
                           type="number"
-                          min={1960}
+                          min={1917}
                           max={2030}
                           value={endYear}
                           onChange={(e) => setEndYear(Number(e.target.value))}
                           disabled={batchRunning}
-                          className="w-24 px-3 py-1.5 rounded-lg bg-[#0a0d14] border border-[#232c40] text-white text-xs font-mono font-bold focus:outline-none focus:border-purple-500 disabled:opacity-50"
+                          className="w-20 px-3 py-1.5 rounded-lg bg-[#0a0d14] border border-[#232c40] text-white text-xs font-mono font-bold focus:outline-none focus:border-purple-500 disabled:opacity-50"
                         />
                       </div>
 
                       {/* Quick Presets */}
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <span className="text-[11px] text-gray-500 mr-1">Presets:</span>
-                        <button
-                          type="button"
-                          onClick={() => { setStartYear(2026); setEndYear(2020); }}
-                          disabled={batchRunning}
-                          className="px-2.5 py-1 rounded bg-[#171c28] hover:bg-[#1f2638] text-[11px] text-gray-300 hover:text-white border border-[#222a3d] transition-colors disabled:opacity-50"
-                        >
-                          2026→2020
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { setStartYear(2026); setEndYear(2010); }}
-                          disabled={batchRunning}
-                          className="px-2.5 py-1 rounded bg-[#171c28] hover:bg-[#1f2638] text-[11px] text-gray-300 hover:text-white border border-[#222a3d] transition-colors disabled:opacity-50"
-                        >
-                          2026→2010
-                        </button>
                         <button
                           type="button"
                           onClick={() => { setStartYear(2026); setEndYear(1980); }}
                           disabled={batchRunning}
                           className="px-2.5 py-1 rounded bg-[#171c28] hover:bg-[#1f2638] text-[11px] text-gray-300 hover:text-white border border-[#222a3d] transition-colors disabled:opacity-50"
                         >
-                          2026→1980 (Full)
+                          2026→1980
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setStartYear(1979); setEndYear(1960); }}
+                          disabled={batchRunning}
+                          className="px-2.5 py-1 rounded bg-purple-500/15 hover:bg-purple-500/25 text-[11px] text-purple-200 border border-purple-500/30 transition-colors disabled:opacity-50 font-medium"
+                        >
+                          1979→1960 (Retro)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setStartYear(1979); setEndYear(1940); }}
+                          disabled={batchRunning}
+                          className="px-2.5 py-1 rounded bg-purple-500/15 hover:bg-purple-500/25 text-[11px] text-purple-200 border border-purple-500/30 transition-colors disabled:opacity-50 font-medium"
+                        >
+                          1979→1940 (Golden Age)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setStartYear(1979); setEndYear(1917); }}
+                          disabled={batchRunning}
+                          className="px-2.5 py-1 rounded bg-[#171c28] hover:bg-[#1f2638] text-[11px] text-gray-400 hover:text-white border border-[#222a3d] transition-colors disabled:opacity-50"
+                        >
+                          1979→1917 (All Origins)
                         </button>
                       </div>
                     </div>
 
-                    {/* Action Button: Start or Pause Year Crawler */}
+                    {/* Action Button: Start, Pause, or Auto-Adjust Range */}
                     <div>
                       {batchRunning && activeRunningMode === "years" ? (
                         <button
@@ -925,6 +935,14 @@ export default function AdminDashboardClient() {
                         >
                           <Pause className="w-4 h-4 fill-white" />
                           <span>Pause Year Crawler</span>
+                        </button>
+                      ) : startYear < endYear ? (
+                        <button
+                          onClick={() => setEndYear(Math.max(1940, startYear - 20))}
+                          className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-lg shadow-purple-600/30"
+                        >
+                          <Play className="w-4 h-4 fill-white" />
+                          <span>Set End Year to {Math.max(1940, startYear - 20)} & Continue</span>
                         </button>
                       ) : (
                         <button
