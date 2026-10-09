@@ -11,6 +11,16 @@ declare global {
 const CRON_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
 export function initAiringCron() {
+  if (typeof window !== "undefined") return;
+
+  // Never run cron during Next.js build phase
+  if (
+    process.env.NEXT_PHASE === "phase-production-build" ||
+    process.env.npm_lifecycle_event === "build"
+  ) {
+    return;
+  }
+
   if (global.__airingCronInitialized) {
     return;
   }
@@ -40,6 +50,11 @@ export function initAiringCron() {
       console.error("[Airing Cron] Scheduled sync error:", err.message);
     }
   }, CRON_INTERVAL_MS);
+
+  // Unref timer so it never prevents the Node process from exiting cleanly
+  if (global.__airingCronTimer && typeof global.__airingCronTimer.unref === "function") {
+    global.__airingCronTimer.unref();
+  }
 }
 
 // Automatically invoke on module load so it starts with the server

@@ -26,19 +26,35 @@ export default async function HomePage() {
   let topCharsRes, topStaffRes, reviews, news;
 
   if (source === "db") {
-    // Blazing-fast DB-First loading
-    [trending, seasonal, topRated, airing, upcoming, topCharsRes, topStaffRes, reviews, news] =
-      await Promise.all([
-        getCuratedAnimeFromDb("trending", 24),
-        getCuratedAnimeFromDb("popular", 24),
-        getCuratedAnimeFromDb("top", 24),
-        getCuratedAnimeFromDb("airing", 30),
-        getCuratedAnimeFromDb("upcoming", 12),
-        getTopCharacters(1, 8),
-        getTopStaff(1, 8),
-        getGlobalRecentReviews(6),
-        getAnimeNews(6),
-      ]);
+    // Blazing-fast DB-First loading with graceful fallback if DB is unreachable during Docker build
+    try {
+      [trending, seasonal, topRated, airing, upcoming, topCharsRes, topStaffRes, reviews, news] =
+        await Promise.all([
+          getCuratedAnimeFromDb("trending", 24),
+          getCuratedAnimeFromDb("popular", 24),
+          getCuratedAnimeFromDb("top", 24),
+          getCuratedAnimeFromDb("airing", 30),
+          getCuratedAnimeFromDb("upcoming", 12),
+          getTopCharacters(1, 8),
+          getTopStaff(1, 8),
+          getGlobalRecentReviews(6),
+          getAnimeNews(6),
+        ]);
+    } catch (err) {
+      console.warn("DB query failed on HomePage, falling back to AniList:", err);
+      [trending, seasonal, topRated, airing, topCharsRes, topStaffRes, upcoming, reviews, news] =
+        await Promise.all([
+          getTrendingAnime(24),
+          getPopularThisSeason(24),
+          getTopRatedAnime(24),
+          getAiringToday(30),
+          getTopCharacters(1, 8),
+          getTopStaff(1, 8),
+          getUpcomingAnticipated(12),
+          getGlobalRecentReviews(6),
+          getAnimeNews(6),
+        ]);
+    }
   } else {
     // Live AniList API proxy
     [trending, seasonal, topRated, airing, topCharsRes, topStaffRes, upcoming, reviews, news] =

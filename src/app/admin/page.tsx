@@ -1,6 +1,8 @@
 import { Metadata } from "next";
 import AdminDashboardClient from "@/components/AdminDashboardClient";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Admin Command Center & Cloud SQL Monitor | AnimeDB",
   description:
