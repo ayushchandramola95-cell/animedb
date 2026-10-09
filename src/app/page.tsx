@@ -10,9 +10,10 @@ import {
   getGlobalRecentReviews,
   getAnimeNews,
 } from "@/lib/anilist";
-import { getCuratedAnimeFromDb } from "@/lib/dbAnime";
+import { getCuratedAnimeFromDb, getFeaturedSpotlightAnimeFromDb } from "@/lib/dbAnime";
 import { getDataSourceSetting } from "@/lib/settings";
 import HomeClientShell from "@/components/HomeClientShell";
+import { AnimeMedia } from "@/lib/types";
 
 export const revalidate = 60; // 60 seconds revalidation to pick up toggle changes quickly
 
@@ -71,11 +72,27 @@ export default async function HomePage() {
       ]);
   }
 
-  // Pick top 5 spotlight anime with high-res banner and trailer
-  const spotlightList = trending
-    .filter((a) => a.bannerImage && a.trailer?.id)
-    .slice(0, 5);
+  // Fetch custom admin-featured anime for the Homepage Hero Spotlight Carousel
+  let customSpotlight: AnimeMedia[] = [];
+  try {
+    customSpotlight = await getFeaturedSpotlightAnimeFromDb(5);
+  } catch (err) {
+    console.warn("Could not load custom spotlight from DB:", err);
+  }
 
+  // Prioritize admin-curated spotlight anime, filling up to 5 slots with trending titles
+  const spotlightList: AnimeMedia[] = [...customSpotlight];
+  const featuredIds = new Set(customSpotlight.map((a) => a.id));
+
+  for (const item of trending) {
+    if (spotlightList.length >= 5) break;
+    if (!featuredIds.has(item.id) && item.bannerImage && item.trailer?.id) {
+      spotlightList.push(item);
+      featuredIds.add(item.id);
+    }
+  }
+
+  // Fallback if no banner/trailer matches found
   if (spotlightList.length === 0 && trending.length > 0) {
     spotlightList.push(trending[0]);
   }

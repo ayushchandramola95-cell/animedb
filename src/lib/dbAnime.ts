@@ -392,3 +392,29 @@ export async function getCuratedAnimeFromDb(
 
   return res.rows.map((r) => mapDbRowToAnimeMedia(r));
 }
+
+/**
+ * Custom featured anime for the Homepage Hero Spotlight Carousel
+ */
+export async function getFeaturedSpotlightAnimeFromDb(limit = 5): Promise<AnimeMedia[]> {
+  try {
+    const res = await query(
+      `
+      SELECT
+        anilist_id, mal_id, title_english, title_romaji, title_native, slug,
+        synopsis, format, status, season, season_year, episodes_count, episode_duration,
+        score, popularity, cover_image_url, banner_image_url, accent_color,
+        genres, studios, youtube_trailer_id, next_airing_episode, next_airing_at
+      FROM anime
+      WHERE is_featured = true
+      ORDER BY featured_order ASC, updated_at DESC
+      LIMIT $1;
+    `,
+      [limit]
+    );
+    return res.rows.map((r) => mapDbRowToAnimeMedia(r));
+  } catch (err) {
+    console.warn("Failed to fetch featured spotlight anime:", err);
+    return [];
+  }
+}

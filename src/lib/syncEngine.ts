@@ -4,7 +4,7 @@ import { getCurrentSeason } from "./anilist";
 const ANILIST_ENDPOINT = "https://graphql.anilist.co";
 
 export const BULK_SYNC_QUERY = `
-  query GetBulkAnime($page: Int, $perPage: Int, $season: MediaSeason, $seasonYear: Int, $sort: [MediaSort]) {
+  query GetBulkAnime($page: Int, $perPage: Int, $season: MediaSeason, $seasonYear: Int, $status: MediaStatus, $sort: [MediaSort]) {
     Page(page: $page, perPage: $perPage) {
       pageInfo {
         hasNextPage
@@ -12,7 +12,7 @@ export const BULK_SYNC_QUERY = `
         total
         lastPage
       }
-      media(type: ANIME, season: $season, seasonYear: $seasonYear, sort: $sort) {
+      media(type: ANIME, season: $season, seasonYear: $seasonYear, status: $status, sort: $sort) {
         id
         idMal
         title {
@@ -313,7 +313,7 @@ export async function upsertAnimeRecord(media: any) {
 }
 
 export async function fetchAndSyncBatch(options: {
-  action: "test" | "seasonal" | "top" | "page" | "year";
+  action: "test" | "seasonal" | "top" | "page" | "year" | "upcoming";
   page?: number;
   perPage?: number;
   year?: number;
@@ -330,6 +330,12 @@ export async function fetchAndSyncBatch(options: {
     variables = {
       ...variables,
       seasonYear: inputYear,
+      sort: ["POPULARITY_DESC"],
+    };
+  } else if (action === "upcoming") {
+    variables = {
+      ...variables,
+      status: "NOT_YET_RELEASED",
       sort: ["POPULARITY_DESC"],
     };
   } else if (action === "seasonal") {

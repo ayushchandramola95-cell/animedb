@@ -41,6 +41,15 @@ import {
   ShieldAlert,
   CheckCheck,
   SlidersHorizontal,
+  Star,
+  Edit3,
+  Trash2,
+  Plus,
+  X,
+  Save,
+  Palette,
+  FileText,
+  Link as LinkIcon,
 } from "lucide-react";
 import Navbar from "./Navbar";
 
@@ -103,6 +112,9 @@ interface AnimeRecord {
   next_airing_episode: number | null;
   next_airing_at: string | null;
   is_published: boolean;
+  is_featured?: boolean;
+  featured_order?: number;
+  custom_notes?: string | null;
   created_at: string;
   updated_at: string;
   characters?: CharacterItem[];
@@ -194,6 +206,38 @@ export default function AdminDashboardClient() {
   const [selectedAnime, setSelectedAnime] = useState<AnimeRecord | null>(null);
   const [loadingInspect, setLoadingInspect] = useState(false);
   const [inspectTab, setInspectTab] = useState<"overview" | "cast" | "stream" | "trailer">("overview");
+
+  // Spotlight state
+  const [spotlightList, setSpotlightList] = useState<AnimeRecord[]>([]);
+  const [loadingSpotlight, setLoadingSpotlight] = useState(false);
+
+  // Admin Anime Editor Modal state
+  const [editingAnime, setEditingAnime] = useState<AnimeRecord | null>(null);
+  const [editTab, setEditTab] = useState<"content" | "spotlight" | "streams">("content");
+  const [editModalLoading, setEditModalLoading] = useState(false);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [editSaveStatus, setEditSaveStatus] = useState<"success" | "error" | null>(null);
+
+  const [editForm, setEditForm] = useState({
+    synopsis: "",
+    accent_color: "#3b82f6",
+    custom_notes: "",
+    is_featured: false,
+    featured_order: 0,
+    youtube_trailer_id: "",
+    score: null as number | null,
+    status: "FINISHED",
+    episodes_count: null as number | null,
+    is_published: true,
+  });
+
+  // Streaming links inside editor
+  const [editingStreamingLinks, setEditingStreamingLinks] = useState<StreamingLinkItem[]>([]);
+  const [newLinkPlatform, setNewLinkPlatform] = useState("Crunchyroll");
+  const [newLinkUrl, setNewLinkUrl] = useState("");
+  const [newLinkAffiliate, setNewLinkAffiliate] = useState("");
+  const [newLinkIsOfficial, setNewLinkIsOfficial] = useState(true);
+  const [isAddingLink, setIsAddingLink] = useState(false);
 
   const addLog = (msg: string) => {
     setIngestLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 100)]);
@@ -299,6 +343,215 @@ export default function AdminDashboardClient() {
       console.error(err);
     } finally {
       setLoadingInspect(false);
+    }
+  };
+
+  // Spotlight List Fetcher
+  const fetchSpotlightAnime = async () => {
+    setLoadingSpotlight(true);
+    try {
+      const res = await fetch("/api/admin/anime?spotlight=true");
+      const data = await res.json();
+      if (data.success) {
+        setSpotlightList(data.data || []);
+      }
+    } catch (err) {
+      console.error("Failed to fetch spotlight list:", err);
+    } finally {
+      setLoadingSpotlight(false);
+    }
+  };
+
+  // Open Full Anime Editor Modal
+  const handleOpenEdit = async (anime: AnimeRecord) => {
+    setEditingAnime(anime);
+    setEditTab("content");
+    setEditSaveStatus(null);
+    setEditForm({
+      synopsis: anime.synopsis || "",
+      accent_color: anime.accent_color || "#3b82f6",
+      custom_notes: anime.custom_notes || "",
+      is_featured: Boolean(anime.is_featured),
+      featured_order: anime.featured_order ?? 0,
+      youtube_trailer_id: anime.youtube_trailer_id || "",
+      score: anime.score,
+      status: anime.status || "FINISHED",
+      episodes_count: anime.episodes_count,
+      is_published: anime.is_published ?? true,
+    });
+    setEditingStreamingLinks(anime.streaming_links || []);
+    setNewLinkPlatform("Crunchyroll");
+    setNewLinkUrl("");
+    setNewLinkAffiliate("");
+    setNewLinkIsOfficial(true);
+    setEditModalLoading(true);
+
+    try {
+      const res = await fetch(`/api/admin/anime?id=${anime.anilist_id}`);
+      const data = await res.json();
+      if (data.success && data.data) {
+        const full = data.data;
+        setEditingAnime(full);
+        setEditingStreamingLinks(full.streaming_links || []);
+        setEditForm({
+          synopsis: full.synopsis || "",
+          accent_color: full.accent_color || "#3b82f6",
+          custom_notes: full.custom_notes || "",
+          is_featured: Boolean(full.is_featured),
+          featured_order: full.featured_order ?? 0,
+          youtube_trailer_id: full.youtube_trailer_id || "",
+          score: full.score,
+          status: full.status || "FINISHED",
+          episodes_count: full.episodes_count,
+          is_published: full.is_published ?? true,
+        });
+      }
+    } catch (err) {
+      console.error("Failed to load anime details for editing:", err);
+    } finally {
+      setEditModalLoading(false);
+    }
+  };
+
+  // Save Edits to Cloud SQL
+  const handleSaveEdit = async () => {
+    if (!editingAnime) return;
+    setIsSavingEdit(true);
+    setEditSaveStatus(null);
+
+    try {
+      const res = await fetch("/api/admin/anime", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          anilist_id: editingAnime.anilist_id,
+          synopsis: editForm.synopsis,
+          accent_color: editForm.accent_color,
+          custom_notes: editForm.custom_notes,
+          is_featured: editForm.is_featured,
+          featured_order: Number(editForm.featured_order) || 0,
+          youtube_trailer_id: editForm.youtube_trailer_id,
+          score: editForm.score !== null && editForm.score !== undefined ? Number(editForm.score) : null,
+          status: editForm.status,
+          episodes_count: editForm.episodes_count !== null && editForm.episodes_count !== undefined ? Number(editForm.episodes_count) : null,
+          is_published: editForm.is_published,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        setEditSaveStatus("success");
+        addLog(`✓ Updated Anime #${editingAnime.anilist_id} (${editingAnime.title_romaji}) in Cloud SQL.`);
+        
+        // Update local state in animeList so table reflects immediately
+        setAnimeList((prev) =>
+          prev.map((item) =>
+            item.anilist_id === editingAnime.anilist_id
+              ? { ...item, ...editForm, ...(data.data || {}) }
+              : item
+          )
+        );
+        if (selectedAnime && selectedAnime.anilist_id === editingAnime.anilist_id) {
+          setSelectedAnime((prev) => (prev ? { ...prev, ...editForm, ...(data.data || {}) } : null));
+        }
+        fetchSpotlightAnime();
+        setTimeout(() => setEditSaveStatus(null), 3000);
+      } else {
+        setEditSaveStatus("error");
+        addLog(`❌ Failed to update anime #${editingAnime.anilist_id}: ${data.error}`);
+      }
+    } catch (err: any) {
+      setEditSaveStatus("error");
+      addLog(`❌ Edit save error: ${err.message}`);
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  // Add Custom Legal / Affiliate Streaming Link
+  const handleAddStreamingLink = async () => {
+    if (!editingAnime || !newLinkPlatform.trim() || !newLinkUrl.trim()) return;
+    setIsAddingLink(true);
+
+    try {
+      const res = await fetch("/api/admin/anime", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          anilist_id: editingAnime.anilist_id,
+          new_streaming_link: {
+            platform_name: newLinkPlatform.trim(),
+            target_url: newLinkUrl.trim(),
+            affiliate_url: newLinkAffiliate.trim() || null,
+            is_official: newLinkIsOfficial,
+          },
+        }),
+      });
+
+      const data = await res.json();
+      if (data.success && data.data?.streaming_links) {
+        setEditingStreamingLinks(data.data.streaming_links);
+        setNewLinkUrl("");
+        setNewLinkAffiliate("");
+        addLog(`✓ Added streaming link (${newLinkPlatform}) for #${editingAnime.anilist_id}`);
+        fetchStats();
+      }
+    } catch (err: any) {
+      addLog(`❌ Add streaming link error: ${err.message}`);
+    } finally {
+      setIsAddingLink(false);
+    }
+  };
+
+  // Delete Streaming Link
+  const handleDeleteStreamingLink = async (linkId: string) => {
+    if (!editingAnime) return;
+    try {
+      const res = await fetch("/api/admin/anime", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          anilist_id: editingAnime.anilist_id,
+          delete_streaming_link_id: linkId,
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.data?.streaming_links) {
+        setEditingStreamingLinks(data.data.streaming_links);
+        addLog(`✓ Removed streaming link from #${editingAnime.anilist_id}`);
+        fetchStats();
+      }
+    } catch (err: any) {
+      addLog(`❌ Delete streaming link error: ${err.message}`);
+    }
+  };
+
+  // Quick Spotlight Toggle Helper (e.g., from cards or table)
+  const handleQuickSpotlightToggle = async (anime: AnimeRecord, shouldFeature: boolean, newOrder = 0) => {
+    try {
+      const res = await fetch("/api/admin/anime", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          anilist_id: anime.anilist_id,
+          is_featured: shouldFeature,
+          featured_order: newOrder,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        addLog(`✓ ${shouldFeature ? "Featured" : "Removed"} #${anime.anilist_id} in Homepage Spotlight Carousel.`);
+        fetchSpotlightAnime();
+        setAnimeList((prev) =>
+          prev.map((item) =>
+            item.anilist_id === anime.anilist_id
+              ? { ...item, is_featured: shouldFeature, featured_order: newOrder }
+              : item
+          )
+        );
+      }
+    } catch (err: any) {
+      addLog(`❌ Toggle spotlight error: ${err.message}`);
     }
   };
 
@@ -565,6 +818,7 @@ export default function AdminDashboardClient() {
     fetchStats();
     fetchSettings();
     fetchAiringSyncData();
+    fetchSpotlightAnime();
   }, []);
 
   useEffect(() => {
@@ -576,7 +830,7 @@ export default function AdminDashboardClient() {
   }, [activeTab, statusFilter]);
 
   // Execute single ingestion action
-  const handleRunSync = async (action: "test" | "seasonal" | "top", page = 1) => {
+  const handleRunSync = async (action: "test" | "seasonal" | "top" | "upcoming", page = 1) => {
     setIngestLoading(true);
     addLog(`Initiating AniList batch query [Action: ${action.toUpperCase()}, Page: ${page}]...`);
 
@@ -1115,6 +1369,15 @@ export default function AdminDashboardClient() {
                   {ingestLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin text-white" /> : <Database className="w-3.5 h-3.5 text-white" />}
                   <span>Sync Top Ranked (20)</span>
                 </button>
+
+                <button
+                  onClick={() => handleRunSync("upcoming")}
+                  disabled={ingestLoading}
+                  className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-semibold text-white transition-colors flex items-center gap-1.5 disabled:opacity-50 shadow-lg shadow-purple-600/20"
+                >
+                  {ingestLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin text-white" /> : <Calendar className="w-3.5 h-3.5 text-white" />}
+                  <span>Sync Upcoming (20)</span>
+                </button>
               </div>
             </div>
 
@@ -1225,6 +1488,123 @@ export default function AdminDashboardClient() {
                   </span>
                 </div>
               </div>
+            </div>
+
+            {/* Homepage Hero Spotlight Carousel Manager Hub */}
+            <div className="p-6 rounded-3xl bg-gradient-to-br from-[#181524] via-[#121622] to-[#0f121a] border border-amber-500/25 shadow-xl flex flex-col gap-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/30 text-[10px] font-bold mb-1.5">
+                    <Star className="w-3 h-3 fill-amber-300 text-amber-300" />
+                    <span>HOMEPAGE HERO SPOTLIGHT MANAGER</span>
+                  </div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <span>Curated Hero Spotlight Carousel ({spotlightList.length} Pinned)</span>
+                  </h3>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    Admin-curated anime slide priority at the top of your homepage hero banner. Pinned titles appear first in sequence; remaining slots dynamically fill with high-res trending trailers.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setStatusFilter("SPOTLIGHT");
+                      setActiveTab("database");
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-xs font-semibold transition-all flex items-center gap-1.5"
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5" />
+                    <span>Filter Spotlight in DB</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setStatusFilter("ALL");
+                      setActiveTab("database");
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition-all flex items-center gap-1.5"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>+ Pin More Anime</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Spotlight Carousel Items Grid / Carousel */}
+              {spotlightList.length === 0 ? (
+                <div className="p-6 rounded-2xl bg-[#0e111a] border border-[#1e2436] flex flex-col items-center justify-center text-center gap-2">
+                  <Star className="w-8 h-8 text-amber-500/30" />
+                  <span className="text-xs font-semibold text-gray-300">
+                    No custom anime pinned to the Hero Spotlight Carousel yet
+                  </span>
+                  <span className="text-[11px] text-gray-500 max-w-md">
+                    The homepage is currently auto-selecting top trending titles with banners and trailers. Click &quot;Edit&quot; on any anime in Database Explorer to pin it here with custom slide priority!
+                  </span>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
+                  {spotlightList.map((anime, idx) => (
+                    <div
+                      key={anime.anilist_id}
+                      className="p-3 rounded-2xl bg-[#0f131d] border border-amber-500/20 hover:border-amber-500/50 transition-all flex flex-col justify-between group relative overflow-hidden"
+                    >
+                      <div className="relative aspect-[16/9] w-full rounded-xl overflow-hidden bg-gray-900 mb-2.5">
+                        {anime.banner_image_url || anime.cover_image_url ? (
+                          <Image
+                            src={anime.banner_image_url || anime.cover_image_url || ""}
+                            alt={anime.title_romaji}
+                            fill
+                            className="object-cover group-hover:scale-105 transition-transform duration-300"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-xs text-gray-600">
+                            No Banner
+                          </div>
+                        )}
+                        <span className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/80 backdrop-blur-md text-[10px] font-bold text-amber-300 border border-amber-400/30 flex items-center gap-1">
+                          <Star className="w-2.5 h-2.5 fill-amber-300 text-amber-300" />
+                          <span>Slide #{anime.featured_order || idx + 1}</span>
+                        </span>
+                      </div>
+
+                      <div className="flex flex-col gap-1 min-w-0">
+                        <span className="text-[10px] text-gray-500 font-mono">#{anime.anilist_id}</span>
+                        <h4 className="text-xs font-bold text-white truncate" title={anime.title_romaji}>
+                          {anime.title_english || anime.title_romaji}
+                        </h4>
+                        <div className="flex items-center gap-1.5 text-[10px] text-gray-400">
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ backgroundColor: anime.accent_color || "#3b82f6" }}
+                          />
+                          <span className="truncate">{anime.format || "TV"} • ★ {anime.score || "—"}</span>
+                          {anime.youtube_trailer_id && (
+                            <span className="text-rose-400 font-semibold shrink-0">Trailer ✓</span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="pt-3 mt-2 border-t border-[#1d2435] flex items-center justify-between gap-1.5">
+                        <button
+                          onClick={() => handleOpenEdit(anime)}
+                          className="px-2.5 py-1 rounded-lg bg-blue-600/15 hover:bg-blue-600/25 text-blue-300 text-[11px] font-semibold transition-colors flex items-center gap-1"
+                        >
+                          <Edit3 className="w-3 h-3" />
+                          <span>Edit</span>
+                        </button>
+                        <button
+                          onClick={() => handleQuickSpotlightToggle(anime, false)}
+                          className="px-2 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[11px] font-semibold transition-colors"
+                          title="Remove from Homepage Spotlight"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Recent Anime Ingested Grid */}
@@ -2374,6 +2754,7 @@ export default function AdminDashboardClient() {
                   className="px-3 py-2 rounded-xl bg-[#0e111a] border border-[#21293c] text-xs text-white font-medium focus:outline-none"
                 >
                   <option value="ALL">All Statuses</option>
+                  <option value="SPOTLIGHT">⭐ Spotlight Featured</option>
                   <option value="RELEASING">Currently Airing</option>
                   <option value="FINISHED">Finished Airing</option>
                   <option value="NOT_YET_RELEASED">Upcoming</option>
@@ -2447,9 +2828,16 @@ export default function AdminDashboardClient() {
                                 )}
                               </div>
                               <div className="flex flex-col min-w-0">
-                                <span className="font-semibold text-white truncate max-w-xs" title={anime.title_romaji}>
-                                  {anime.title_english || anime.title_romaji}
-                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-semibold text-white truncate max-w-xs" title={anime.title_romaji}>
+                                    {anime.title_english || anime.title_romaji}
+                                  </span>
+                                  {anime.is_featured && (
+                                    <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[9px] font-bold shrink-0">
+                                      ⭐ #{anime.featured_order || 0}
+                                    </span>
+                                  )}
+                                </div>
                                 <span className="text-[10px] text-gray-500 font-mono">
                                   AniList ID #{anime.anilist_id}
                                 </span>
@@ -2495,7 +2883,7 @@ export default function AdminDashboardClient() {
                           </td>
 
                           <td className="px-4 py-3 text-right">
-                            <div className="flex items-center justify-end gap-2">
+                            <div className="flex items-center justify-end gap-1.5">
                               <Link
                                 href={`/anime/${anime.anilist_id}`}
                                 target="_blank"
@@ -2510,6 +2898,13 @@ export default function AdminDashboardClient() {
                               >
                                 <Eye className="w-3 h-3" />
                                 <span>Inspect</span>
+                              </button>
+                              <button
+                                onClick={() => handleOpenEdit(anime)}
+                                className="px-2.5 py-1 rounded-lg bg-purple-600/15 hover:bg-purple-600/25 text-purple-300 border border-purple-500/30 text-[11px] font-semibold transition-colors flex items-center gap-1"
+                              >
+                                <Edit3 className="w-3 h-3" />
+                                <span>Edit</span>
                               </button>
                             </div>
                           </td>
@@ -2569,13 +2964,22 @@ export default function AdminDashboardClient() {
                 )}
                 <div className="absolute inset-0 bg-gradient-to-t from-[#11141e] via-[#11141e]/60 to-transparent" />
 
-                {/* Close Button */}
-                <button
-                  onClick={() => setSelectedAnime(null)}
-                  className="absolute top-4 right-4 z-10 p-2 rounded-full bg-black/60 hover:bg-black/80 text-gray-300 hover:text-white transition-colors"
-                >
-                  ✕
-                </button>
+                {/* Header Action Buttons */}
+                <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
+                  <button
+                    onClick={() => handleOpenEdit(selectedAnime)}
+                    className="px-3.5 py-1.5 rounded-full bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold shadow-lg transition-all flex items-center gap-1.5"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>Edit Anime</span>
+                  </button>
+                  <button
+                    onClick={() => setSelectedAnime(null)}
+                    className="p-2 rounded-full bg-black/60 hover:bg-black/80 text-gray-300 hover:text-white transition-colors"
+                  >
+                    ✕
+                  </button>
+                </div>
 
                 {/* Header Content with Floating Cover Poster */}
                 <div className="absolute bottom-4 left-6 right-6 flex items-end gap-4 sm:gap-6">
@@ -2946,6 +3350,534 @@ export default function AdminDashboardClient() {
                 >
                   <span>Open Full Public View →</span>
                 </Link>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* ADMIN ANIME EDITOR & HOMEPAGE SPOTLIGHT MANAGER MODAL */}
+        {/* ========================================================================= */}
+        {editingAnime && (
+          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
+            <div className="max-w-3xl w-full bg-[#11141e] border border-[#232c42] rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[92vh]">
+              {/* Modal Top Accent Strip */}
+              <div
+                className="h-2 w-full transition-colors duration-300"
+                style={{ backgroundColor: editForm.accent_color || "#3b82f6" }}
+              />
+
+              {/* Modal Header */}
+              <div className="px-6 py-4 bg-[#141824] border-b border-[#202738] flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="relative w-12 h-16 rounded-lg overflow-hidden bg-gray-900 border border-[#2b354e] shrink-0">
+                    {editingAnime.cover_image_url ? (
+                      <Image
+                        src={editingAnime.cover_image_url}
+                        alt=""
+                        fill
+                        className="object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-[10px] text-gray-600">
+                        No Img
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-mono font-bold">
+                        #{editingAnime.anilist_id}
+                      </span>
+                      {editForm.is_featured && (
+                        <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold flex items-center gap-1">
+                          <Star className="w-2.5 h-2.5 fill-amber-300 text-amber-300" />
+                          <span>Spotlight #{editForm.featured_order}</span>
+                        </span>
+                      )}
+                    </div>
+                    <h3 className="text-base font-bold text-white truncate max-w-md mt-0.5" title={editingAnime.title_romaji}>
+                      {editingAnime.title_english || editingAnime.title_romaji}
+                    </h3>
+                    <span className="text-[11px] text-gray-400 font-mono">
+                      {editingAnime.format || "TV"} • {editingAnime.season_year || "Unknown Year"}
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => setEditingAnime(null)}
+                  className="p-2 rounded-full bg-[#1b2130] hover:bg-[#252c40] text-gray-400 hover:text-white transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Editor Tabs Navigation */}
+              <div className="flex items-center px-6 bg-[#0f121b] border-b border-[#1c2334] gap-2 text-xs">
+                <button
+                  onClick={() => setEditTab("content")}
+                  className={`py-3 px-3.5 font-semibold border-b-2 transition-colors flex items-center gap-2 ${
+                    editTab === "content"
+                      ? "border-purple-500 text-purple-300"
+                      : "border-transparent text-gray-400 hover:text-gray-200"
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>Content & Editorial</span>
+                </button>
+
+                <button
+                  onClick={() => setEditTab("spotlight")}
+                  className={`py-3 px-3.5 font-semibold border-b-2 transition-colors flex items-center gap-2 ${
+                    editTab === "spotlight"
+                      ? "border-amber-500 text-amber-300"
+                      : "border-transparent text-gray-400 hover:text-gray-200"
+                  }`}
+                >
+                  <Star className="w-3.5 h-3.5" />
+                  <span>Homepage Hero Spotlight</span>
+                </button>
+
+                <button
+                  onClick={() => setEditTab("streams")}
+                  className={`py-3 px-3.5 font-semibold border-b-2 transition-colors flex items-center gap-2 ${
+                    editTab === "streams"
+                      ? "border-blue-500 text-blue-300"
+                      : "border-transparent text-gray-400 hover:text-gray-200"
+                  }`}
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Watch Links ({editingStreamingLinks.length})</span>
+                </button>
+              </div>
+
+              {/* Editor Body */}
+              <div className="p-6 overflow-y-auto space-y-5 text-xs flex-1 bg-[#10131d]">
+                {editModalLoading ? (
+                  <div className="p-12 flex flex-col items-center justify-center gap-3 text-gray-400">
+                    <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
+                    <span>Loading anime details from Cloud SQL...</span>
+                  </div>
+                ) : (
+                  <>
+                    {/* TAB 1: CONTENT & EDITORIAL */}
+                    {editTab === "content" && (
+                      <div className="space-y-4">
+                        {/* Synopsis Override */}
+                        <div className="space-y-1.5">
+                          <label className="text-gray-300 font-semibold flex items-center justify-between">
+                            <span>Synopsis / Description (HTML / Plain Text Override)</span>
+                            <span className="text-[10px] text-gray-500 font-normal">
+                              {editForm.synopsis.length} characters
+                            </span>
+                          </label>
+                          <textarea
+                            value={editForm.synopsis}
+                            onChange={(e) => setEditForm({ ...editForm, synopsis: e.target.value })}
+                            rows={6}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-[#0a0c12] border border-[#232c40] text-gray-200 text-xs focus:outline-none focus:border-purple-500 transition-colors leading-relaxed font-sans"
+                            placeholder="Enter anime synopsis or editorial description..."
+                          />
+                          <p className="text-[11px] text-gray-500">
+                            Custom editorial descriptions will be served directly to all website visitors across the Homepage, Browse, and Details pages.
+                          </p>
+                        </div>
+
+                        {/* Accent Color Customizer */}
+                        <div className="p-4 rounded-2xl bg-[#0a0d14] border border-[#21293c] space-y-3">
+                          <label className="text-gray-300 font-semibold flex items-center gap-2">
+                            <Palette className="w-4 h-4 text-purple-400" />
+                            <span>Theme Accent Color</span>
+                          </label>
+
+                          <div className="flex flex-wrap items-center gap-3">
+                            <div className="flex items-center gap-2 bg-[#121622] px-3 py-1.5 rounded-xl border border-[#273248]">
+                              <input
+                                type="color"
+                                value={editForm.accent_color || "#3b82f6"}
+                                onChange={(e) => setEditForm({ ...editForm, accent_color: e.target.value })}
+                                className="w-6 h-6 rounded cursor-pointer bg-transparent border-0"
+                              />
+                              <input
+                                type="text"
+                                value={editForm.accent_color}
+                                onChange={(e) => setEditForm({ ...editForm, accent_color: e.target.value })}
+                                className="w-20 bg-transparent text-white font-mono text-xs focus:outline-none"
+                              />
+                            </div>
+
+                            {/* Preset Color Swatches */}
+                            <div className="flex items-center gap-1.5">
+                              {[
+                                { name: "Blue", hex: "#3b82f6" },
+                                { name: "Emerald", hex: "#10b981" },
+                                { name: "Purple", hex: "#a855f7" },
+                                { name: "Crimson", hex: "#ef4444" },
+                                { name: "Amber", hex: "#f59e0b" },
+                                { name: "Pink", hex: "#ec4899" },
+                                { name: "Teal", hex: "#14b8a6" },
+                              ].map((preset) => (
+                                <button
+                                  key={preset.hex}
+                                  type="button"
+                                  onClick={() => setEditForm({ ...editForm, accent_color: preset.hex })}
+                                  className="w-5 h-5 rounded-full border border-white/20 transition-transform hover:scale-110"
+                                  style={{ backgroundColor: preset.hex }}
+                                  title={preset.name}
+                                />
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Custom Editorial / Internal Notes */}
+                        <div className="space-y-1.5">
+                          <label className="text-gray-300 font-semibold flex items-center justify-between">
+                            <span>Custom Editorial Notes / Admin Commentary</span>
+                            <span className="text-[10px] text-amber-400 font-normal">
+                              Internal / Editor Only
+                            </span>
+                          </label>
+                          <textarea
+                            value={editForm.custom_notes}
+                            onChange={(e) => setEditForm({ ...editForm, custom_notes: e.target.value })}
+                            rows={3}
+                            className="w-full px-3.5 py-2.5 rounded-xl bg-[#0a0c12] border border-[#232c40] text-gray-200 text-xs focus:outline-none focus:border-purple-500 transition-colors leading-relaxed font-sans"
+                            placeholder="Add admin notes, staff review highlights, content warnings, or affiliate campaign notes..."
+                          />
+                        </div>
+
+                        {/* Score & Episode Count Grid */}
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <div className="space-y-1">
+                            <span className="text-gray-400 font-medium">Community Score:</span>
+                            <input
+                              type="number"
+                              step="0.1"
+                              min={0}
+                              max={10}
+                              value={editForm.score ?? ""}
+                              onChange={(e) =>
+                                setEditForm({
+                                  ...editForm,
+                                  score: e.target.value === "" ? null : Number(e.target.value),
+                                })
+                              }
+                              className="w-full px-3 py-2 rounded-xl bg-[#0a0c12] border border-[#232c40] text-white font-mono focus:outline-none focus:border-purple-500"
+                              placeholder="e.g. 8.8"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-gray-400 font-medium">Episodes Count:</span>
+                            <input
+                              type="number"
+                              min={0}
+                              value={editForm.episodes_count ?? ""}
+                              onChange={(e) =>
+                                setEditForm({
+                                  ...editForm,
+                                  episodes_count: e.target.value === "" ? null : Number(e.target.value),
+                                })
+                              }
+                              className="w-full px-3 py-2 rounded-xl bg-[#0a0c12] border border-[#232c40] text-white font-mono focus:outline-none focus:border-purple-500"
+                              placeholder="e.g. 24"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-gray-400 font-medium">Air Status:</span>
+                            <select
+                              value={editForm.status}
+                              onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
+                              className="w-full px-3 py-2 rounded-xl bg-[#0a0c12] border border-[#232c40] text-white font-medium focus:outline-none focus:border-purple-500"
+                            >
+                              <option value="FINISHED">FINISHED</option>
+                              <option value="RELEASING">RELEASING</option>
+                              <option value="NOT_YET_RELEASED">NOT_YET_RELEASED</option>
+                              <option value="CANCELLED">CANCELLED</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* TAB 2: HOMEPAGE HERO SPOTLIGHT */}
+                    {editTab === "spotlight" && (
+                      <div className="space-y-5">
+                        {/* Spotlight Toggle Card */}
+                        <div
+                          className={`p-5 rounded-2xl border transition-all ${
+                            editForm.is_featured
+                              ? "bg-gradient-to-r from-amber-950/40 via-[#181524] to-[#121622] border-amber-500/50 shadow-lg shadow-amber-950/20"
+                              : "bg-[#0a0d14] border-[#21293c]"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-4">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <Star
+                                  className={`w-4 h-4 ${
+                                    editForm.is_featured ? "fill-amber-300 text-amber-300" : "text-gray-500"
+                                  }`}
+                                />
+                                <span className="font-bold text-sm text-white">
+                                  Homepage Hero Spotlight Carousel
+                                </span>
+                              </div>
+                              <p className="text-xs text-gray-400">
+                                When enabled, this anime is pinned directly to the homepage hero carousel banner before any automated trending anime.
+                              </p>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => setEditForm({ ...editForm, is_featured: !editForm.is_featured })}
+                              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none shrink-0 ${
+                                editForm.is_featured ? "bg-amber-500" : "bg-gray-700"
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                                  editForm.is_featured ? "translate-x-6" : "translate-x-1"
+                                }`}
+                              />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Slide Priority Order */}
+                        <div className="p-4 rounded-2xl bg-[#0a0d14] border border-[#21293c] space-y-2">
+                          <label className="text-gray-300 font-semibold flex items-center justify-between">
+                            <span>Carousel Slide Display Order (1 = Top / First Slide)</span>
+                            <span className="text-[10px] text-amber-400 font-mono font-bold">
+                              Current: Slide #{editForm.featured_order}
+                            </span>
+                          </label>
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            value={editForm.featured_order}
+                            onChange={(e) =>
+                              setEditForm({ ...editForm, featured_order: Number(e.target.value) || 0 })
+                            }
+                            className="w-full sm:w-48 px-3.5 py-2 rounded-xl bg-[#121622] border border-[#273248] text-white font-mono text-xs focus:outline-none focus:border-amber-500"
+                          />
+                          <p className="text-[11px] text-gray-500">
+                            Lower numbers appear first (Order 1 appears before Order 2). Recommended: feature up to 5 anime for a fast-loading hero carousel.
+                          </p>
+                        </div>
+
+                        {/* YouTube Trailer ID */}
+                        <div className="p-4 rounded-2xl bg-[#0a0d14] border border-[#21293c] space-y-2">
+                          <label className="text-gray-300 font-semibold flex items-center justify-between">
+                            <span>YouTube Trailer ID / Key</span>
+                            {editForm.youtube_trailer_id && (
+                              <span className="text-emerald-400 font-mono text-[10px]">
+                                Preview Available
+                              </span>
+                            )}
+                          </label>
+                          <input
+                            type="text"
+                            value={editForm.youtube_trailer_id}
+                            onChange={(e) => setEditForm({ ...editForm, youtube_trailer_id: e.target.value })}
+                            placeholder="e.g. 5kQGqGqGqGq or full URL"
+                            className="w-full px-3.5 py-2 rounded-xl bg-[#121622] border border-[#273248] text-white font-mono text-xs focus:outline-none focus:border-purple-500"
+                          />
+                          <p className="text-[11px] text-gray-500">
+                            Trailers enable the interactive video modal playback directly from the hero carousel slides.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* TAB 3: LEGAL STREAMING & AFFILIATE LINKS */}
+                    {editTab === "streams" && (
+                      <div className="space-y-5">
+                        {/* Current Streaming Links List */}
+                        <div className="space-y-2">
+                          <span className="text-gray-300 font-semibold">
+                            Active Legal & Affiliate Streaming Links ({editingStreamingLinks.length})
+                          </span>
+
+                          {editingStreamingLinks.length === 0 ? (
+                            <div className="p-6 rounded-2xl bg-[#0a0d14] border border-[#1e2436] text-center text-gray-500 text-xs">
+                              No legal streaming links attached to this title yet. Add one below!
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              {editingStreamingLinks.map((link) => (
+                                <div
+                                  key={link.id}
+                                  className="p-3.5 rounded-xl bg-[#0a0d14] border border-[#21293c] flex items-center justify-between gap-3"
+                                >
+                                  <div className="flex items-center gap-2.5 min-w-0">
+                                    <span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/20 text-[10px] font-bold">
+                                      {link.platform_name}
+                                    </span>
+                                    <div className="flex flex-col min-w-0">
+                                      <a
+                                        href={link.target_url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-xs text-gray-300 hover:text-white truncate flex items-center gap-1 font-mono"
+                                      >
+                                        <span>{link.target_url}</span>
+                                        <ExternalLink className="w-3 h-3 text-gray-500 shrink-0" />
+                                      </a>
+                                      {link.affiliate_url && (
+                                        <span className="text-[10px] text-amber-400/90 font-mono truncate">
+                                          Affiliate: {link.affiliate_url}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteStreamingLink(link.id)}
+                                    className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 transition-colors shrink-0"
+                                    title="Delete Link"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Add New Streaming Link Form */}
+                        <div className="p-4 rounded-2xl bg-[#0f131d] border border-blue-500/20 space-y-3">
+                          <span className="text-gray-200 font-bold flex items-center gap-2">
+                            <Plus className="w-3.5 h-3.5 text-blue-400" />
+                            <span>Add Custom Legal / Affiliate Streaming Link</span>
+                          </span>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                              <span className="text-gray-400 text-[11px]">Platform Name:</span>
+                              <select
+                                value={newLinkPlatform}
+                                onChange={(e) => setNewLinkPlatform(e.target.value)}
+                                className="w-full px-3 py-2 rounded-xl bg-[#0a0d14] border border-[#232c40] text-white text-xs focus:outline-none"
+                              >
+                                <option value="Crunchyroll">Crunchyroll</option>
+                                <option value="Netflix">Netflix</option>
+                                <option value="Hulu">Hulu</option>
+                                <option value="Disney+">Disney+</option>
+                                <option value="Amazon Prime Video">Amazon Prime Video</option>
+                                <option value="Hidive">Hidive</option>
+                                <option value="YouTube">YouTube</option>
+                                <option value="Custom Platform">Custom Platform</option>
+                              </select>
+                            </div>
+
+                            <div className="space-y-1">
+                              <span className="text-gray-400 text-[11px]">Official Platform?</span>
+                              <div className="flex items-center gap-2 pt-2">
+                                <input
+                                  type="checkbox"
+                                  id="isOfficial"
+                                  checked={newLinkIsOfficial}
+                                  onChange={(e) => setNewLinkIsOfficial(e.target.checked)}
+                                  className="rounded bg-[#0a0d14] border-[#232c40] text-blue-600 focus:ring-0"
+                                />
+                                <label htmlFor="isOfficial" className="text-xs text-gray-300">
+                                  Mark as Verified Official Streaming
+                                </label>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-gray-400 text-[11px]">Target Watch URL:</span>
+                            <input
+                              type="url"
+                              value={newLinkUrl}
+                              onChange={(e) => setNewLinkUrl(e.target.value)}
+                              placeholder="https://www.crunchyroll.com/series/..."
+                              className="w-full px-3.5 py-2 rounded-xl bg-[#0a0d14] border border-[#232c40] text-white text-xs font-mono focus:outline-none focus:border-blue-500"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-gray-400 text-[11px]">Affiliate Tracking URL (Optional):</span>
+                            <input
+                              type="url"
+                              value={newLinkAffiliate}
+                              onChange={(e) => setNewLinkAffiliate(e.target.value)}
+                              placeholder="https://crunchyroll.pxf.io/c/... (affiliate link with revenue share)"
+                              className="w-full px-3.5 py-2 rounded-xl bg-[#0a0d14] border border-[#232c40] text-white text-xs font-mono focus:outline-none focus:border-blue-500"
+                            />
+                          </div>
+
+                          <div className="pt-1">
+                            <button
+                              type="button"
+                              onClick={handleAddStreamingLink}
+                              disabled={isAddingLink || !newLinkUrl.trim()}
+                              className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                            >
+                              {isAddingLink ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Plus className="w-3.5 h-3.5" />
+                              )}
+                              <span>Add Link to Database</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="px-6 py-4 bg-[#141824] border-t border-[#202738] flex items-center justify-between gap-4">
+                <div className="flex items-center gap-2">
+                  {editSaveStatus === "success" && (
+                    <span className="text-emerald-400 font-semibold flex items-center gap-1 text-xs">
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>Changes saved to Google Cloud SQL!</span>
+                    </span>
+                  )}
+                  {editSaveStatus === "error" && (
+                    <span className="text-rose-400 font-semibold flex items-center gap-1 text-xs">
+                      <AlertCircle className="w-4 h-4" />
+                      <span>Failed to save changes.</span>
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingAnime(null)}
+                    className="px-4 py-2 rounded-xl bg-[#1a202e] hover:bg-[#242c3e] text-gray-300 text-xs font-semibold transition-colors"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleSaveEdit}
+                    disabled={isSavingEdit}
+                    className="px-5 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold transition-all shadow-lg shadow-purple-950/30 flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    {isSavingEdit ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                    ) : (
+                      <Save className="w-4 h-4 text-white" />
+                    )}
+                    <span>Save All Changes</span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
