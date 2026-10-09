@@ -510,3 +510,152 @@ export async function getExtendedAnimeData(anilistId: number) {
     reviews: reviewsRes.rows,
   };
 }
+
+export interface CrawlBatchOptions {
+  mode?: "airing_upcoming_then_years" | "years_only" | "airing_only" | "specific_year";
+  year?: number;
+  skipAlreadySynced?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+export interface CrawlSummaryResult {
+  totalMatching: number;
+  alreadyEnriched: number;
+  remainingToEnrich: number;
+  mode: string;
+}
+
+/**
+ * Get summary counts for the Automated Catalog Extras Crawler
+ */
+export async function getCrawlBatchSummary(options: CrawlBatchOptions): Promise<CrawlSummaryResult> {
+  const mode = options.mode || "airing_upcoming_then_years";
+  const whereClauses: string[] = [];
+  const params: any[] = [];
+
+  if (mode === "airing_only") {
+    whereClauses.push(`a.status IN ('RELEASING', 'NOT_YET_RELEASED')`);
+  } else if (mode === "specific_year" && options.year) {
+    params.push(options.year);
+    whereClauses.push(`a.season_year = $${params.length}`);
+  }
+
+  const baseWhere = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+
+  const countSql = `
+    SELECT
+      COUNT(1) as total_matching,
+      COUNT(1) FILTER (WHERE EXISTS (SELECT 1 FROM anime_episodes e WHERE e.anime_id = a.anilist_id)) as already_enriched
+    FROM anime a
+    ${baseWhere};
+  `;
+
+  const res = await query(countSql, params);
+  const row = res.rows[0] || {};
+  const totalMatching = parseInt(row.total_matching || "0", 10);
+  const alreadyEnriched = parseInt(row.already_enriched || "0", 10);
+  const remainingToEnrich = Math.max(0, totalMatching - alreadyEnriched);
+
+  return {
+    totalMatching,
+    alreadyEnriched,
+    remainingToEnrich,
+    mode,
+  };
+}
+
+/**
+ * Step runner for the Automated Catalog Extras Crawler
+ * Fetches the next `limit` anime (ordered chronologically by year/airing),
+ * syncs their extended media, OSTs, dubs, and reviews one by one with rate-limit pacing.
+ */
+export async function runCrawlBatchStep(options: CrawlBatchOptions): Promise<{
+  processed: Array<ExtendedSyncResult & { year?: number; status?: string; coverImage?: string }>;
+  remainingCount: number;
+  totalMatching: number;
+  hasMore: boolean;
+}> {
+  const mode = options.mode || "airing_upcoming_then_years";
+  const limit = Math.max(1, Math.min(options.limit || 5, 20));
+  const skipAlreadySynced = options.skipAlreadySynced ?? true;
+  const offset = options.offset || 0;
+
+  const whereClauses: string[] = [];
+  const params: any[] = [];
+
+  if (mode === "airing_only") {
+    whereClauses.push(`a.status IN ('RELEASING', 'NOT_YET_RELEASED')`);
+  } else if (mode === "specific_year" && options.year) {
+    params.push(options.year);
+    whereClauses.push(`a.season_year = $${params.length}`);
+  }
+
+  if (skipAlreadySynced) {
+    whereClauses.push(`NOT EXISTS (SELECT 1 FROM anime_episodes e WHERE e.anime_id = a.anilist_id)`);
+  }
+
+  const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+
+  let orderSql = `
+    ORDER BY
+      CASE 
+        WHEN a.status IN ('RELEASING', 'NOT_YET_RELEASED') THEN 0 
+        ELSE 1 
+      END ASC,
+      a.season_year DESC NULLS LAST,
+      a.popularity DESC NULLS LAST
+  `;
+
+  if (mode === "years_only" || mode === "specific_year") {
+    orderSql = `ORDER BY a.season_year DESC NULLS LAST, a.popularity DESC NULLS LAST`;
+  }
+
+  params.push(limit);
+  const limitParamIdx = params.length;
+
+  let offsetSql = "";
+  if (!skipAlreadySynced && offset > 0) {
+    params.push(offset);
+    offsetSql = `OFFSET $${params.length}`;
+  }
+
+  const selectSql = `
+    SELECT
+      a.anilist_id,
+      a.title_english,
+      a.title_romaji,
+      a.season_year,
+      a.status,
+      a.cover_image_url
+    FROM anime a
+    ${whereSql}
+    ${orderSql}
+    LIMIT $${limitParamIdx} ${offsetSql};
+  `;
+
+  const { rows } = await query(selectSql, params);
+  const processed: Array<ExtendedSyncResult & { year?: number; status?: string; coverImage?: string }> = [];
+
+  for (const row of rows) {
+    const result = await syncExtendedDataForAnime(row.anilist_id);
+    processed.push({
+      ...result,
+      year: row.season_year,
+      status: row.status,
+      coverImage: row.cover_image_url,
+    });
+    // Rate-limiting delay: 750ms between AniList/AniSong calls
+    await new Promise((r) => setTimeout(r, 750));
+  }
+
+  // Get updated summary count
+  const summary = await getCrawlBatchSummary(options);
+
+  return {
+    processed,
+    remainingCount: summary.remainingToEnrich,
+    totalMatching: summary.totalMatching,
+    hasMore: rows.length === limit && (skipAlreadySynced ? summary.remainingToEnrich > 0 : true),
+  };
+}

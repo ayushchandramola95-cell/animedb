@@ -4,6 +4,8 @@ import {
   syncBatchExtendedData,
   getExtendedAnimeStats,
   getExtendedAnimeData,
+  getCrawlBatchSummary,
+  runCrawlBatchStep,
 } from "@/lib/extendedSyncEngine";
 import { query } from "@/lib/db";
 
@@ -19,6 +21,17 @@ export async function GET(req: NextRequest) {
     if (statsOnly) {
       const stats = await getExtendedAnimeStats();
       return NextResponse.json({ success: true, stats });
+    }
+
+    // Return crawl summary (counts, remaining) for automated crawler
+    if (searchParams.get("crawlSummary") === "true") {
+      const mode = (searchParams.get("mode") || "airing_upcoming_then_years") as any;
+      const yearStr = searchParams.get("year");
+      const year = yearStr ? parseInt(yearStr, 10) : undefined;
+      const skipAlreadySynced = searchParams.get("skipSynced") !== "false";
+
+      const summary = await getCrawlBatchSummary({ mode, year, skipAlreadySynced });
+      return NextResponse.json({ success: true, summary });
     }
 
     // Return extended data for a specific anime
@@ -83,7 +96,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Batch Sync
+    // Batch Sync (legacy limit)
     if (action === "batch_sync") {
       const batchResult = await syncBatchExtendedData({
         limit: Number(limit) || 10,
@@ -97,6 +110,34 @@ export async function POST(req: NextRequest) {
         success: true,
         action: "batch_sync",
         ...batchResult,
+        stats,
+      });
+    }
+
+    // Automated Catalog Extras Crawler Step
+    if (action === "crawl_batch_step") {
+      const {
+        mode = "airing_upcoming_then_years",
+        year,
+        skipAlreadySynced = true,
+        limit = 5,
+        offset = 0,
+      } = body;
+
+      const crawlStepResult = await runCrawlBatchStep({
+        mode,
+        year: year ? Number(year) : undefined,
+        skipAlreadySynced: Boolean(skipAlreadySynced),
+        limit: Number(limit) || 5,
+        offset: Number(offset) || 0,
+      });
+
+      const stats = await getExtendedAnimeStats();
+
+      return NextResponse.json({
+        success: true,
+        action: "crawl_batch_step",
+        ...crawlStepResult,
         stats,
       });
     }

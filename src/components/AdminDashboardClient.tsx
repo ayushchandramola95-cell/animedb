@@ -270,6 +270,46 @@ export default function AdminDashboardClient() {
   const [extendedResultBanner, setExtendedResultBanner] = useState<string | null>(null);
   const [dubLanguageFilter, setDubLanguageFilter] = useState<string>("ALL");
 
+  // 1-Click Automated Catalog Extras Crawler State
+  const stopExtendedCrawlerRef = useRef(false);
+  const [extendedCrawlerRunning, setExtendedCrawlerRunning] = useState(false);
+  const [extendedCrawlerPaused, setExtendedCrawlerPaused] = useState(false);
+  const [extendedCrawlerMode, setExtendedCrawlerMode] = useState<
+    "airing_upcoming_then_years" | "years_only" | "airing_only" | "specific_year"
+  >("airing_upcoming_then_years");
+  const [extendedCrawlerYear, setExtendedCrawlerYear] = useState(2026);
+  const [extendedCrawlerSkipSynced, setExtendedCrawlerSkipSynced] = useState(true);
+  const [extendedCrawlerBatchSize, setExtendedCrawlerBatchSize] = useState(5);
+  const [extendedCrawlerSummary, setExtendedCrawlerSummary] = useState<{
+    totalMatching: number;
+    alreadyEnriched: number;
+    remainingToEnrich: number;
+  }>({ totalMatching: 0, alreadyEnriched: 0, remainingToEnrich: 0 });
+  const [extendedCurrentAnime, setExtendedCurrentAnime] = useState<{
+    id: number;
+    title: string;
+    year?: number;
+    status?: string;
+    cover?: string;
+    eps?: number;
+    themes?: number;
+    dubs?: number;
+    reviews?: number;
+  } | null>(null);
+  const [extendedCrawlerSession, setExtendedCrawlerSession] = useState<{
+    animeProcessed: number;
+    episodesAdded: number;
+    themesAdded: number;
+    dubsAdded: number;
+    reviewsAdded: number;
+  }>({
+    animeProcessed: 0,
+    episodesAdded: 0,
+    themesAdded: 0,
+    dubsAdded: 0,
+    reviewsAdded: 0,
+  });
+
   const addLog = (msg: string) => {
     setIngestLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 100)]);
   };
@@ -712,6 +752,147 @@ export default function AdminDashboardClient() {
     }
   };
 
+  // 1-Click Automated Extras Crawler Handlers
+  const fetchExtendedCrawlSummary = async () => {
+    try {
+      const url = `/api/admin/extended-sync?crawlSummary=true&mode=${extendedCrawlerMode}&year=${extendedCrawlerYear}&skipSynced=${extendedCrawlerSkipSynced}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.success && data.summary) {
+        setExtendedCrawlerSummary(data.summary);
+      }
+    } catch (err) {
+      console.error("Error fetching crawler summary:", err);
+    }
+  };
+
+  const handleStartExtendedCrawler = async () => {
+    stopExtendedCrawlerRef.current = false;
+    setExtendedCrawlerRunning(true);
+    setExtendedCrawlerPaused(false);
+    setExtendedResultBanner(null);
+
+    const modeLabels: Record<string, string> = {
+      airing_upcoming_then_years: "Airing & Upcoming First, then Year 2026 Descending",
+      years_only: "Pure Chronological Year Descending",
+      airing_only: "Currently Airing & Upcoming Catalog",
+      specific_year: `Release Year ${extendedCrawlerYear}`,
+    };
+
+    addLog(
+      `🚀 Launched 1-Click Extras Automated Crawler in '${modeLabels[extendedCrawlerMode]}' mode (${
+        extendedCrawlerSkipSynced ? "Smart Resume enabled" : "Full Re-sync"
+      })...`
+    );
+
+    let offset = 0;
+    let hasMore = true;
+
+    while (!stopExtendedCrawlerRef.current && hasMore) {
+      try {
+        const res = await fetch("/api/admin/extended-sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "crawl_batch_step",
+            mode: extendedCrawlerMode,
+            year: extendedCrawlerYear,
+            skipAlreadySynced: extendedCrawlerSkipSynced,
+            limit: extendedCrawlerBatchSize,
+            offset,
+          }),
+        });
+
+        if (!res.ok) {
+          addLog(`⚠️ Crawler batch warning: HTTP ${res.status}. Retrying in 3s...`);
+          await new Promise((r) => setTimeout(r, 3000));
+          continue;
+        }
+
+        const data = await res.json();
+
+        if (data.success && data.processed && data.processed.length > 0) {
+          for (const item of data.processed) {
+            setExtendedCurrentAnime({
+              id: item.animeId,
+              title: item.title,
+              year: item.year,
+              status: item.status,
+              cover: item.coverImage,
+              eps: item.episodesCount,
+              themes: item.themesCount,
+              dubs: item.dubsCount,
+              reviews: item.reviewsCount,
+            });
+
+            setExtendedCrawlerSession((prev) => ({
+              animeProcessed: prev.animeProcessed + 1,
+              episodesAdded: prev.episodesAdded + (item.episodesCount || 0),
+              themesAdded: prev.themesAdded + (item.themesCount || 0),
+              dubsAdded: prev.dubsAdded + (item.dubsCount || 0),
+              reviewsAdded: prev.reviewsAdded + (item.reviewsCount || 0),
+            }));
+
+            addLog(
+              `✓ [#${item.animeId}] ${item.title} (${item.year || "N/A"}${item.status ? ` • ${item.status}` : ""}): +${item.episodesCount} eps, +${item.themesCount} themes, +${item.dubsCount} dubs, +${item.reviewsCount} reviews`
+            );
+          }
+
+          if (data.stats) setExtendedStats(data.stats);
+          if (typeof data.remainingCount === "number") {
+            setExtendedCrawlerSummary((prev) => ({
+              ...prev,
+              remainingToEnrich: data.remainingCount,
+              alreadyEnriched: prev.totalMatching - data.remainingCount,
+            }));
+          }
+
+          hasMore = Boolean(data.hasMore);
+          if (!extendedCrawlerSkipSynced) {
+            offset += data.processed.length;
+          }
+        } else {
+          hasMore = false;
+          addLog("🏁 All matching anime catalog extras have been successfully enriched!");
+        }
+      } catch (err: any) {
+        addLog(`✗ Network warning in crawler step: ${err.message}. Retrying in 4s...`);
+        await new Promise((r) => setTimeout(r, 4000));
+      }
+
+      if (stopExtendedCrawlerRef.current) break;
+      await new Promise((r) => setTimeout(r, 400));
+    }
+
+    setExtendedCrawlerRunning(false);
+
+    if (stopExtendedCrawlerRef.current) {
+      setExtendedCrawlerPaused(true);
+      addLog("⏸ Extras Automated Crawler paused. Click Resume anytime to pick up seamlessly where you left off!");
+    } else {
+      setExtendedCrawlerPaused(false);
+      setExtendedCurrentAnime(null);
+      addLog("🏆 Automated Extras Ingestion Complete! All requested anime now have full episodes, OSTs, dubs & reviews.");
+      fetchExtendedStats();
+      fetchExtendedCrawlSummary();
+    }
+  };
+
+  const handlePauseExtendedCrawler = () => {
+    stopExtendedCrawlerRef.current = true;
+    setExtendedCrawlerRunning(false);
+    setExtendedCrawlerPaused(true);
+    addLog("⏸ Pausing Extras Crawler after the current item finishes...");
+  };
+
+  const handleStopExtendedCrawler = () => {
+    stopExtendedCrawlerRef.current = true;
+    setExtendedCrawlerRunning(false);
+    setExtendedCrawlerPaused(false);
+    setExtendedCurrentAnime(null);
+    addLog("⏹ Extras Crawler stopped.");
+  };
+
   // Airing Sync Helpers
   const fetchAiringSyncData = async () => {
     try {
@@ -986,11 +1167,18 @@ export default function AdminDashboardClient() {
       fetchAiringSyncData();
     } else if (activeTab === "extended") {
       fetchExtendedStats();
+      fetchExtendedCrawlSummary();
       if (selectedExtendedAnimeId) {
         loadExtendedAnimeData(selectedExtendedAnimeId);
       }
     }
   }, [activeTab, statusFilter]);
+
+  useEffect(() => {
+    if (activeTab === "extended") {
+      fetchExtendedCrawlSummary();
+    }
+  }, [activeTab, extendedCrawlerMode, extendedCrawlerYear, extendedCrawlerSkipSynced]);
 
   // Execute single ingestion action
   const handleRunSync = async (action: "test" | "seasonal" | "top" | "upcoming", page = 1) => {
@@ -3275,6 +3463,296 @@ export default function AdminDashboardClient() {
                 </button>
               </div>
             )}
+
+            {/* ============================================================= */}
+            {/* 1-CLICK AUTOMATED FULL-CATALOG EXTRAS CRAWLER ENGINE */}
+            {/* ============================================================= */}
+            <div className="p-6 sm:p-7 rounded-3xl bg-gradient-to-b from-[#151a29] via-[#121623] to-[#0f131c] border border-purple-500/30 shadow-2xl relative overflow-hidden">
+              {/* Background ambient decorative light */}
+              <div className="absolute top-0 right-0 w-96 h-96 bg-purple-600/10 rounded-full blur-3xl pointer-events-none -mr-20 -mt-20" />
+              <div className="absolute bottom-0 left-0 w-96 h-96 bg-indigo-600/10 rounded-full blur-3xl pointer-events-none -ml-20 -mb-20" />
+
+              <div className="relative z-10 flex flex-col gap-6">
+                {/* Header & Badges */}
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2 mb-2">
+                      <span className="px-2.5 py-1 rounded-full bg-gradient-to-r from-purple-500/20 to-indigo-500/20 text-purple-300 text-[10px] font-bold uppercase tracking-wider border border-purple-500/30 flex items-center gap-1.5 shadow-sm">
+                        <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                        1-Click Full-Catalog Auto-Ingestion
+                      </span>
+                      <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 text-[10px] font-bold tracking-wider border border-emerald-500/20 flex items-center gap-1">
+                        <ShieldCheck className="w-3 h-3" />
+                        Zero Duplicates Guaranteed
+                      </span>
+                      <span className="px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-400 text-[10px] font-bold tracking-wider border border-blue-500/20 flex items-center gap-1">
+                        <Calendar className="w-3 h-3" />
+                        Year & Airing Prioritized
+                      </span>
+                    </div>
+
+                    <h3 className="text-xl sm:text-2xl font-black text-white tracking-tight flex items-center gap-2.5">
+                      <Zap className="w-6 h-6 text-purple-400 fill-purple-400/20" />
+                      Continuous Extras Catalog Crawler
+                    </h3>
+                    <p className="text-xs sm:text-sm text-gray-400 mt-1 max-w-3xl leading-relaxed">
+                      Automatically iterates through your entire Cloud SQL database anime one-by-one. Fetches all episode titles, summaries, stills, opening/closing themes, multilingual dub casts, and verified reviews without manual clicking.
+                    </p>
+                  </div>
+
+                  {/* Main Action Control Buttons */}
+                  <div className="flex items-center gap-2.5 shrink-0 self-start lg:self-center">
+                    {!extendedCrawlerRunning ? (
+                      <button
+                        onClick={handleStartExtendedCrawler}
+                        className="px-6 py-3.5 rounded-2xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-600 hover:from-purple-500 hover:via-indigo-500 hover:to-purple-500 text-white font-bold text-sm flex items-center gap-2.5 transition-all shadow-xl shadow-purple-600/30 hover:scale-[1.02] active:scale-[0.98]"
+                      >
+                        <Play className="w-4 h-4 fill-white" />
+                        <span>{extendedCrawlerPaused ? "Resume Extras Crawler" : "Start Auto-Ingestion (1-Click)"}</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handlePauseExtendedCrawler}
+                        className="px-6 py-3.5 rounded-2xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-sm flex items-center gap-2.5 transition-all shadow-xl shadow-amber-500/30 hover:scale-[1.02] active:scale-[0.98]"
+                      >
+                        <Pause className="w-4 h-4 fill-black" />
+                        <span>Pause Crawler</span>
+                      </button>
+                    )}
+
+                    {(extendedCrawlerRunning || extendedCrawlerPaused) && (
+                      <button
+                        onClick={handleStopExtendedCrawler}
+                        className="px-4 py-3.5 rounded-2xl bg-[#1b2130] hover:bg-rose-950/40 text-gray-300 hover:text-rose-400 border border-gray-700/60 hover:border-rose-500/40 font-semibold text-xs transition-colors"
+                        title="Stop & Reset crawler"
+                      >
+                        <Square className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Controls & Configuration Bar */}
+                <div className="p-4 rounded-2xl bg-[#10141f] border border-[#202738] grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-3 items-center">
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">
+                      Crawling Strategy & Order
+                    </label>
+                    <select
+                      value={extendedCrawlerMode}
+                      disabled={extendedCrawlerRunning}
+                      onChange={(e) => setExtendedCrawlerMode(e.target.value as any)}
+                      className="w-full bg-[#181e2c] border border-gray-700/60 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500 disabled:opacity-50"
+                    >
+                      <option value="airing_upcoming_then_years">
+                        🌟 Airing & Upcoming First, then 2026 Descending
+                      </option>
+                      <option value="airing_only">
+                        📡 Currently Airing & Upcoming Only (360 anime)
+                      </option>
+                      <option value="years_only">
+                        📅 Chronological Years (2026 down to 1970)
+                      </option>
+                      <option value="specific_year">
+                        🎯 Specific Release Year
+                      </option>
+                    </select>
+                  </div>
+
+                  {extendedCrawlerMode === "specific_year" && (
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">
+                        Target Release Year
+                      </label>
+                      <input
+                        type="number"
+                        value={extendedCrawlerYear}
+                        disabled={extendedCrawlerRunning}
+                        onChange={(e) => setExtendedCrawlerYear(Number(e.target.value))}
+                        min={1960}
+                        max={2030}
+                        className="w-full bg-[#181e2c] border border-gray-700/60 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-purple-500 disabled:opacity-50"
+                      />
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">
+                      Batch Pacing Size
+                    </label>
+                    <select
+                      value={extendedCrawlerBatchSize}
+                      disabled={extendedCrawlerRunning}
+                      onChange={(e) => setExtendedCrawlerBatchSize(Number(e.target.value))}
+                      className="w-full bg-[#181e2c] border border-gray-700/60 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500 disabled:opacity-50"
+                    >
+                      <option value={3}>3 Anime / Batch (Ultra Gentle)</option>
+                      <option value={5}>5 Anime / Batch (Recommended)</option>
+                      <option value={10}>10 Anime / Batch (Fast)</option>
+                    </select>
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-2 md:pt-4">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-300 font-medium select-none">
+                      <input
+                        type="checkbox"
+                        checked={extendedCrawlerSkipSynced}
+                        disabled={extendedCrawlerRunning}
+                        onChange={(e) => setExtendedCrawlerSkipSynced(e.target.checked)}
+                        className="rounded border-gray-700 text-purple-600 focus:ring-purple-500 w-4 h-4"
+                      />
+                      <span>Smart Resume: Skip already enriched</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Progress Bar & Status HUD */}
+                <div className="p-4 rounded-2xl bg-[#0e121c] border border-[#1e2536] flex flex-col gap-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs gap-2">
+                    <div className="flex items-center gap-2 text-gray-300">
+                      <span className="font-semibold text-white">Catalog Progress:</span>
+                      <span className="text-purple-400 font-mono font-bold">
+                        {extendedCrawlerSummary.alreadyEnriched.toLocaleString()}
+                      </span>
+                      <span>of</span>
+                      <span className="font-mono">{extendedCrawlerSummary.totalMatching.toLocaleString()}</span>
+                      <span>anime enriched</span>
+                      <span className="text-gray-500">
+                        ({extendedCrawlerSummary.remainingToEnrich.toLocaleString()} remaining)
+                      </span>
+                    </div>
+
+                    <div className="text-gray-400 font-mono text-[11px] font-bold">
+                      {extendedCrawlerSummary.totalMatching > 0
+                        ? `${Math.round(
+                            (extendedCrawlerSummary.alreadyEnriched /
+                              extendedCrawlerSummary.totalMatching) *
+                              100
+                          )}% Complete`
+                        : "Ready"}
+                    </div>
+                  </div>
+
+                  {/* Visual Progress Bar */}
+                  <div className="w-full h-3 rounded-full bg-gray-900 border border-[#22293a] overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-purple-600 via-indigo-500 to-emerald-400 transition-all duration-500 rounded-full"
+                      style={{
+                        width: `${
+                          extendedCrawlerSummary.totalMatching > 0
+                            ? Math.max(
+                                1,
+                                (extendedCrawlerSummary.alreadyEnriched /
+                                  extendedCrawlerSummary.totalMatching) *
+                                  100
+                              )
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Active Anime Card & Live Session Metrics */}
+                {(extendedCrawlerRunning || extendedCrawlerSession.animeProcessed > 0 || extendedCurrentAnime) && (
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                    {/* Currently Processing Anime Card */}
+                    <div className="p-4 rounded-2xl bg-[#141926] border border-[#263046] flex items-center gap-3.5 shadow-md">
+                      <div className="relative w-14 h-20 rounded-xl overflow-hidden bg-gray-800 shrink-0 border border-white/10">
+                        {extendedCurrentAnime?.cover ? (
+                          <Image
+                            src={extendedCurrentAnime.cover}
+                            alt=""
+                            fill
+                            className="object-cover"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-gray-600">
+                            <Film className="w-5 h-5" />
+                          </div>
+                        )}
+                        {extendedCrawlerRunning && (
+                          <div className="absolute inset-0 bg-black/40 backdrop-blur-[1px] flex items-center justify-center">
+                            <Loader2 className="w-5 h-5 text-purple-400 animate-spin" />
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 font-mono">
+                            #{extendedCurrentAnime?.id || "—"}
+                          </span>
+                          {extendedCurrentAnime?.year && (
+                            <span className="text-[10px] font-semibold text-gray-400">
+                              Year {extendedCurrentAnime.year}
+                            </span>
+                          )}
+                          {extendedCurrentAnime?.status && (
+                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 uppercase">
+                              {extendedCurrentAnime.status}
+                            </span>
+                          )}
+                        </div>
+
+                        <h4 className="text-xs font-bold text-white truncate">
+                          {extendedCurrentAnime?.title || "Waiting for next anime..."}
+                        </h4>
+
+                        <div className="text-[10px] text-gray-400 mt-1 flex flex-wrap gap-2">
+                          <span>+{extendedCurrentAnime?.eps || 0} eps</span>
+                          <span>+{extendedCurrentAnime?.themes || 0} themes</span>
+                          <span>+{extendedCurrentAnime?.dubs || 0} dubs</span>
+                          <span>+{extendedCurrentAnime?.reviews || 0} reviews</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Session Metrics Accumulator */}
+                    <div className="lg:col-span-2 p-4 rounded-2xl bg-[#141926] border border-[#263046] flex flex-wrap items-center justify-around gap-3">
+                      <div className="text-center">
+                        <div className="text-xs text-gray-400">Anime Crawled</div>
+                        <div className="text-xl font-black text-white mt-0.5">
+                          {extendedCrawlerSession.animeProcessed}
+                        </div>
+                      </div>
+                      <div className="w-[1px] h-8 bg-gray-700/40 hidden sm:block" />
+
+                      <div className="text-center">
+                        <div className="text-xs text-purple-400">Episodes Added</div>
+                        <div className="text-xl font-black text-purple-300 mt-0.5">
+                          +{extendedCrawlerSession.episodesAdded}
+                        </div>
+                      </div>
+                      <div className="w-[1px] h-8 bg-gray-700/40 hidden sm:block" />
+
+                      <div className="text-center">
+                        <div className="text-xs text-indigo-400">Theme Songs</div>
+                        <div className="text-xl font-black text-indigo-300 mt-0.5">
+                          +{extendedCrawlerSession.themesAdded}
+                        </div>
+                      </div>
+                      <div className="w-[1px] h-8 bg-gray-700/40 hidden sm:block" />
+
+                      <div className="text-center">
+                        <div className="text-xs text-pink-400">Dub Actors</div>
+                        <div className="text-xl font-black text-pink-300 mt-0.5">
+                          +{extendedCrawlerSession.dubsAdded}
+                        </div>
+                      </div>
+                      <div className="w-[1px] h-8 bg-gray-700/40 hidden sm:block" />
+
+                      <div className="text-center">
+                        <div className="text-xs text-emerald-400">Reviews Added</div>
+                        <div className="text-xl font-black text-emerald-300 mt-0.5">
+                          +{extendedCrawlerSession.reviewsAdded}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* Control Panels: Single Sync vs Batch Sync */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
