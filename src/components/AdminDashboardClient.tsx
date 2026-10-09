@@ -30,6 +30,17 @@ import {
   AlertCircle,
   CheckCircle2,
   Globe,
+  CheckSquare,
+  Square,
+  Filter,
+  ChevronDown,
+  ChevronUp,
+  History,
+  ListCheck,
+  ArrowRight,
+  ShieldAlert,
+  CheckCheck,
+  SlidersHorizontal,
 } from "lucide-react";
 import Navbar from "./Navbar";
 
@@ -99,7 +110,7 @@ interface AnimeRecord {
 }
 
 export default function AdminDashboardClient() {
-  const [activeTab, setActiveTab] = useState<"overview" | "ingest" | "database">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "airing" | "audit" | "ingest" | "database">("overview");
 
   // Database stats & status
   const [stats, setStats] = useState<DbStats>({
@@ -112,6 +123,37 @@ export default function AdminDashboardClient() {
   const [recentLogs, setRecentLogs] = useState<any[]>([]);
   const [recentAnime, setRecentAnime] = useState<any[]>([]);
   const [loadingStats, setLoadingStats] = useState(true);
+
+  // Airing Sync state
+  const [airingLoading, setAiringLoading] = useState(false);
+  const [airingSettings, setAiringSettings] = useState<{
+    autoSyncEnabled: boolean;
+    lastSyncAt: string | null;
+    intervalMinutes: number;
+  }>({
+    autoSyncEnabled: true,
+    lastSyncAt: null,
+    intervalMinutes: 30,
+  });
+  const [airingHistory, setAiringHistory] = useState<any[]>([]);
+  const [expandedLogId, setExpandedLogId] = useState<number | null>(null);
+  const [airingSummary, setAiringSummary] = useState<any | null>(null);
+  const [nextSyncSeconds, setNextSyncSeconds] = useState<number>(30 * 60);
+
+  // Catalog Audit state
+  const [auditRunning, setAuditRunning] = useState(false);
+  const [auditScope, setAuditScope] = useState<"popular" | "recent" | "all">("popular");
+  const [auditYear, setAuditYear] = useState<number>(2025);
+  const [auditPage, setAuditPage] = useState<number>(1);
+  const [auditTotalAvailable, setAuditTotalAvailable] = useState<number>(10000);
+  const [auditedTotalCount, setAuditedTotalCount] = useState<number>(0);
+  const [pendingDiffs, setPendingDiffs] = useState<any[]>([]);
+  const [selectedDiffIds, setSelectedDiffIds] = useState<Set<string>>(new Set());
+  const [diffFilterType, setDiffFilterType] = useState<string>("ALL");
+  const [diffSearchQuery, setDiffSearchQuery] = useState<string>("");
+  const [applyingChanges, setApplyingChanges] = useState(false);
+  const [applyResultBanner, setApplyResultBanner] = useState<string | null>(null);
+  const stopAuditRef = useRef(false);
 
   // Ingestion runner state
   const [ingestLoading, setIngestLoading] = useState(false);
@@ -260,14 +302,276 @@ export default function AdminDashboardClient() {
     }
   };
 
+  // Airing Sync Helpers
+  const fetchAiringSyncData = async () => {
+    try {
+      const res = await fetch("/api/admin/airing-sync");
+      const data = await res.json();
+      if (data.success) {
+        if (data.settings) setAiringSettings(data.settings);
+        if (data.history) setAiringHistory(data.history);
+      }
+    } catch (err) {
+      console.error("Error fetching airing sync data:", err);
+    }
+  };
+
+  const handleTriggerAiringSync = async () => {
+    if (airingLoading) return;
+    setAiringLoading(true);
+    setAiringSummary(null);
+    try {
+      const res = await fetch("/api/admin/airing-sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trigger: "manual" }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAiringSummary(data.result);
+        if (data.history) setAiringHistory(data.history);
+        if (data.settings) setAiringSettings(data.settings);
+        setNextSyncSeconds(30 * 60);
+        addLog(
+          `⚡ Airing Sync Complete: ${
+            data.result?.status === "UPDATED"
+              ? `Updated ${data.result.changedCount} shows (${data.result.checkedCount} checked)`
+              : `Checked ${data.result.checkedCount} shows — No changes detected (all schedules up to date)`
+          } in ${data.result.executionTimeMs}ms`
+        );
+        await fetchStats();
+      } else {
+        addLog(`❌ Airing Sync Failed: ${data.error}`);
+      }
+    } catch (err: any) {
+      addLog(`❌ Airing Sync Error: ${err.message}`);
+    } finally {
+      setAiringLoading(false);
+    }
+  };
+
+  const handleToggleAiringAutoSync = async () => {
+    const nextState = !airingSettings.autoSyncEnabled;
+    try {
+      const res = await fetch("/api/admin/airing-sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "toggle_auto_sync", enabled: nextState }),
+      });
+      const data = await res.json();
+      if (data.success && data.settings) {
+        setAiringSettings(data.settings);
+        addLog(`⏱ Airing 30-min Auto-Sync ${nextState ? "ENABLED" : "PAUSED"}.`);
+      }
+    } catch (err: any) {
+      addLog(`❌ Failed to toggle auto-sync: ${err.message}`);
+    }
+  };
+
+  // Airing 30-min countdown timer effect
+  useEffect(() => {
+    if (!airingSettings.autoSyncEnabled) return;
+
+    const timer = setInterval(() => {
+      setNextSyncSeconds((prev) => {
+        if (prev <= 1) {
+          fetchAiringSyncData();
+          return 30 * 60;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [airingSettings.autoSyncEnabled]);
+
+  // Catalog Audit Handlers
+  const handleStartCatalogAudit = async () => {
+    if (auditRunning) return;
+    setAuditRunning(true);
+    stopAuditRef.current = false;
+    setApplyResultBanner(null);
+
+    let p = auditPage;
+    let keepAuditing = true;
+    addLog(`🔍 Starting Catalog Audit: Scope=[${auditScope.toUpperCase()}], starting at Page ${p}...`);
+
+    while (keepAuditing && !stopAuditRef.current) {
+      try {
+        const queryParams = new URLSearchParams({
+          page: p.toString(),
+          perPage: "50",
+          scope: auditScope,
+          ...(auditScope === "recent" ? { year: auditYear.toString() } : {}),
+        });
+
+        const res = await fetch(`/api/admin/catalog-audit?${queryParams.toString()}`);
+        const data = await res.json();
+
+        if (data.success) {
+          setAuditTotalAvailable(data.totalAvailable || 10000);
+          setAuditedTotalCount((prev) => prev + (data.checkedCount || 0));
+
+          if (data.diffs && data.diffs.length > 0) {
+            setPendingDiffs((prev) => {
+              const existingIds = new Set(prev.map((d) => d.diffId));
+              const newUnique = data.diffs.filter((d: any) => !existingIds.has(d.diffId));
+              return [...prev, ...newUnique];
+            });
+            // Automatically pre-select newly found diffs
+            setSelectedDiffIds((prev) => {
+              const nextSet = new Set(prev);
+              data.diffs.forEach((d: any) => nextSet.add(d.diffId));
+              return nextSet;
+            });
+            addLog(
+              `🔍 Page ${p}: Audited ${data.checkedCount} titles. Found ${data.diffs.length} discrepancies!`
+            );
+          } else {
+            addLog(`✓ Page ${p}: Audited ${data.checkedCount} titles. 100% in sync with Cloud SQL!`);
+          }
+
+          if (!data.hasNextPage || p >= 200) {
+            keepAuditing = false;
+            addLog(`🏁 Catalog Audit complete for selected scope.`);
+            break;
+          }
+
+          p++;
+          setAuditPage(p);
+        } else {
+          addLog(`❌ Audit Page ${p} error: ${data.error}`);
+          keepAuditing = false;
+        }
+      } catch (err: any) {
+        addLog(`❌ Audit exception: ${err.message}`);
+        keepAuditing = false;
+      }
+
+      // Safe throttle delay to honor AniList 90 req/min limit
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+
+    setAuditRunning(false);
+  };
+
+  const handleStopCatalogAudit = () => {
+    stopAuditRef.current = true;
+    setAuditRunning(false);
+    addLog("⏸ Catalog Audit paused. You can review pending diffs or resume anytime.");
+  };
+
+  const handleToggleDiffSelection = (diffId: string) => {
+    setSelectedDiffIds((prev) => {
+      const nextSet = new Set(prev);
+      if (nextSet.has(diffId)) {
+        nextSet.delete(diffId);
+      } else {
+        nextSet.add(diffId);
+      }
+      return nextSet;
+    });
+  };
+
+  const handleSelectAllDiffs = (currentFiltered: any[]) => {
+    setSelectedDiffIds(new Set(currentFiltered.map((d) => d.diffId)));
+  };
+
+  const handleDeselectAllDiffs = () => {
+    setSelectedDiffIds(new Set());
+  };
+
+  const handleApplySelectedChanges = async () => {
+    if (selectedDiffIds.size === 0 || applyingChanges) return;
+    setApplyingChanges(true);
+
+    const changesToApply = pendingDiffs
+      .filter((d) => selectedDiffIds.has(d.diffId))
+      .map((d) => ({
+        anilistId: d.anilistId,
+        field: d.field,
+        value: d.newValue,
+      }));
+
+    try {
+      const res = await fetch("/api/admin/catalog-audit/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approvedChanges: changesToApply }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setApplyResultBanner(
+          `✅ Successfully applied ${data.result?.appliedCount} anime updates (${data.result?.count} field changes) to Google Cloud SQL!`
+        );
+        setPendingDiffs((prev) => prev.filter((d) => !selectedDiffIds.has(d.diffId)));
+        setSelectedDiffIds(new Set());
+        addLog(`🎉 Applied ${data.result?.appliedCount} audited changes into Cloud SQL.`);
+        await fetchStats();
+      } else {
+        addLog(`❌ Failed to apply changes: ${data.error}`);
+      }
+    } catch (err: any) {
+      addLog(`❌ Apply changes error: ${err.message}`);
+    } finally {
+      setApplyingChanges(false);
+    }
+  };
+
+  const handleApplyAllDiffs = async () => {
+    if (pendingDiffs.length === 0 || applyingChanges) return;
+    setApplyingChanges(true);
+
+    const changesToApply = pendingDiffs.map((d) => ({
+      anilistId: d.anilistId,
+      field: d.field,
+      value: d.newValue,
+    }));
+
+    try {
+      const res = await fetch("/api/admin/catalog-audit/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approvedChanges: changesToApply }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setApplyResultBanner(
+          `✅ Successfully applied all ${data.result?.appliedCount} anime updates (${data.result?.count} field changes) to Google Cloud SQL!`
+        );
+        setPendingDiffs([]);
+        setSelectedDiffIds(new Set());
+        addLog(`🎉 Applied all ${data.result?.appliedCount} audited changes into Cloud SQL.`);
+        await fetchStats();
+      } else {
+        addLog(`❌ Failed to apply changes: ${data.error}`);
+      }
+    } catch (err: any) {
+      addLog(`❌ Apply changes error: ${err.message}`);
+    } finally {
+      setApplyingChanges(false);
+    }
+  };
+
+  const formatCountdown = (totalSec: number) => {
+    const mins = Math.floor(totalSec / 60);
+    const secs = totalSec % 60;
+    return `${mins}m ${secs < 10 ? "0" : ""}${secs}s`;
+  };
+
   useEffect(() => {
     fetchStats();
     fetchSettings();
+    fetchAiringSyncData();
   }, []);
 
   useEffect(() => {
     if (activeTab === "database") {
       fetchAnimeRecords(1);
+    } else if (activeTab === "airing") {
+      fetchAiringSyncData();
     }
   }, [activeTab, statusFilter]);
 
@@ -471,6 +775,18 @@ export default function AdminDashboardClient() {
     return "N/A";
   };
 
+  // Filtered Diffs for Catalog Audit Table
+  const filteredDiffs = pendingDiffs.filter((d) => {
+    if (diffFilterType !== "ALL" && d.field !== diffFilterType) return false;
+    if (diffSearchQuery.trim()) {
+      const q = diffSearchQuery.toLowerCase();
+      const matchTitle = (d.title || "").toLowerCase().includes(q);
+      const matchEn = (d.titleEnglish || "").toLowerCase().includes(q);
+      if (!matchTitle && !matchEn) return false;
+    }
+    return true;
+  });
+
   return (
     <div className="min-h-screen flex flex-col bg-[#0b0d13] text-gray-100">
       <Navbar />
@@ -560,10 +876,10 @@ export default function AdminDashboardClient() {
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex items-center gap-2 border-b border-[#1c2130]">
+        <div className="flex flex-wrap items-center gap-1 border-b border-[#1c2130]">
           <button
             onClick={() => setActiveTab("overview")}
-            className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition-colors flex items-center gap-2 ${
+            className={`px-3.5 py-2.5 text-xs font-semibold border-b-2 transition-colors flex items-center gap-2 ${
               activeTab === "overview"
                 ? "border-blue-500 text-blue-400"
                 : "border-transparent text-gray-400 hover:text-gray-200"
@@ -574,8 +890,40 @@ export default function AdminDashboardClient() {
           </button>
 
           <button
+            onClick={() => setActiveTab("airing")}
+            className={`px-3.5 py-2.5 text-xs font-semibold border-b-2 transition-colors flex items-center gap-2 relative ${
+              activeTab === "airing"
+                ? "border-emerald-500 text-emerald-400"
+                : "border-transparent text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            <Clock className="w-4 h-4 text-emerald-400" />
+            <span>Airing Scheduler & Sync</span>
+            {airingSettings.autoSyncEnabled && (
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse ml-0.5" title="30-Min Auto-Sync Running"></span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab("audit")}
+            className={`px-3.5 py-2.5 text-xs font-semibold border-b-2 transition-colors flex items-center gap-2 relative ${
+              activeTab === "audit"
+                ? "border-purple-500 text-purple-400"
+                : "border-transparent text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            <ListCheck className="w-4 h-4 text-purple-400" />
+            <span>10,000+ Catalog Audit</span>
+            {pendingDiffs.length > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full bg-purple-500/20 text-purple-300 text-[10px] font-bold border border-purple-500/30">
+                {pendingDiffs.length} diffs
+              </span>
+            )}
+          </button>
+
+          <button
             onClick={() => setActiveTab("ingest")}
-            className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition-colors flex items-center gap-2 ${
+            className={`px-3.5 py-2.5 text-xs font-semibold border-b-2 transition-colors flex items-center gap-2 ${
               activeTab === "ingest"
                 ? "border-blue-500 text-blue-400"
                 : "border-transparent text-gray-400 hover:text-gray-200"
@@ -587,7 +935,7 @@ export default function AdminDashboardClient() {
 
           <button
             onClick={() => setActiveTab("database")}
-            className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition-colors flex items-center gap-2 ${
+            className={`px-3.5 py-2.5 text-xs font-semibold border-b-2 transition-colors flex items-center gap-2 ${
               activeTab === "database"
                 ? "border-blue-500 text-blue-400"
                 : "border-transparent text-gray-400 hover:text-gray-200"
@@ -770,6 +1118,115 @@ export default function AdminDashboardClient() {
               </div>
             </div>
 
+            {/* NEW: Airing Sync & Catalog Audit Command Center */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Card 1: Airing Schedule & Episode Countdown Hub */}
+              <div className="p-5 rounded-2xl bg-gradient-to-br from-[#121926] to-[#0f1420] border border-emerald-500/20 shadow-lg flex flex-col justify-between gap-4">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold">
+                      <Clock className="w-3 h-3" />
+                      <span>LIVE BROADCAST TRACKER</span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-gray-400 font-mono">
+                        {airingSettings.autoSyncEnabled ? (
+                          <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                            Next check: {formatCountdown(nextSyncSeconds)}
+                          </span>
+                        ) : (
+                          <span className="text-gray-500">Auto-sync paused</span>
+                        )}
+                      </span>
+                    </div>
+                  </div>
+
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span>Airing Schedule & Countdown Sync</span>
+                  </h3>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Monitors ~230 releasing anime. Automatically updates episode numbers (e.g. Ep 2 ➔ Ep 3), countdown timestamps, and status changes.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#1e273a]">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleTriggerAiringSync}
+                      disabled={airingLoading}
+                      className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold transition-all shadow-md shadow-emerald-900/30 flex items-center gap-1.5 disabled:opacity-50"
+                    >
+                      {airingLoading ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                      ) : (
+                        <Zap className="w-3.5 h-3.5 text-white" />
+                      )}
+                      <span>Sync Airing Now</span>
+                    </button>
+
+                    <button
+                      onClick={handleToggleAiringAutoSync}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
+                        airingSettings.autoSyncEnabled
+                          ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20"
+                          : "bg-gray-800 text-gray-400 border-gray-700 hover:text-white"
+                      }`}
+                    >
+                      <span>Auto-Sync (30m): {airingSettings.autoSyncEnabled ? "ON" : "OFF"}</span>
+                    </button>
+                  </div>
+
+                  <button
+                    onClick={() => setActiveTab("airing")}
+                    className="text-xs text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1"
+                  >
+                    <span>View Logs ({airingHistory.length}) →</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Card 2: 10,000+ Catalog Audit Hub */}
+              <div className="p-5 rounded-2xl bg-gradient-to-br from-[#161324] to-[#100f1c] border border-purple-500/20 shadow-lg flex flex-col justify-between gap-4">
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-purple-500/10 text-purple-400 border border-purple-500/20 text-[10px] font-bold">
+                      <ListCheck className="w-3 h-3" />
+                      <span>CATALOG DIFF AUDITOR</span>
+                    </div>
+
+                    {pendingDiffs.length > 0 && (
+                      <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 text-[10px] font-bold border border-purple-500/30 animate-pulse">
+                        {pendingDiffs.length} Changes Pending
+                      </span>
+                    )}
+                  </div>
+
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span>10,000+ Aired Anime Catalog Audit</span>
+                  </h3>
+                  <p className="text-xs text-gray-400 mt-1">
+                    Scan your 14,883 anime library against AniList in real time. Review score shifts, finalized episode counts, and trailers with selective approvals.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#261f38]">
+                  <button
+                    onClick={() => setActiveTab("audit")}
+                    className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-bold transition-all shadow-md shadow-purple-900/30 flex items-center gap-1.5"
+                  >
+                    <ListCheck className="w-3.5 h-3.5 text-white" />
+                    <span>Launch 10k+ Catalog Audit</span>
+                  </button>
+
+                  <span className="text-xs text-purple-300 font-mono">
+                    {auditedTotalCount > 0 ? `${auditedTotalCount.toLocaleString()} audited` : "14,883 anime ready"}
+                  </span>
+                </div>
+              </div>
+            </div>
+
             {/* Recent Anime Ingested Grid */}
             {recentAnime.length > 0 && (
               <div className="flex flex-col gap-3">
@@ -859,6 +1316,646 @@ export default function AdminDashboardClient() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* TAB: AIRING SCHEDULE & EPISODE COUNTDOWN SYNC */}
+        {/* ========================================================================= */}
+        {activeTab === "airing" && (
+          <div className="flex flex-col gap-6">
+            {/* Airing Sync Header & Master Control */}
+            <div className="p-6 rounded-3xl bg-[#121622] border border-[#1f2638] flex flex-col gap-5 shadow-xl">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold mb-1.5">
+                    <Clock className="w-3 h-3" />
+                    <span>REAL-TIME BROADCAST ENGINE</span>
+                  </div>
+                  <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                    <span>Airing Schedule & Episode Countdown Synchronization</span>
+                  </h2>
+                  <p className="text-xs text-gray-400 mt-0.5 max-w-3xl">
+                    Continuously synchronizes the ~230 currently airing anime with live Japanese TV schedules. Updates next episode numbers, air dates, countdown timers, scores, and marks completed shows as FINISHED.
+                  </p>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={handleToggleAiringAutoSync}
+                    className={`px-4 py-2.5 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 ${
+                      airingSettings.autoSyncEnabled
+                        ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25 shadow-md shadow-emerald-950/40"
+                        : "bg-[#181d2a] text-gray-400 border-[#252e42] hover:text-white"
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full ${airingSettings.autoSyncEnabled ? "bg-emerald-400 animate-pulse" : "bg-gray-500"}`} />
+                    <span>30-Min Auto-Sync: {airingSettings.autoSyncEnabled ? "ACTIVE" : "PAUSED"}</span>
+                  </button>
+
+                  <button
+                    onClick={handleTriggerAiringSync}
+                    disabled={airingLoading}
+                    className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-xs font-bold transition-all shadow-lg shadow-emerald-900/30 flex items-center gap-2 disabled:opacity-50"
+                  >
+                    {airingLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                    ) : (
+                      <Zap className="w-4 h-4 text-white" />
+                    )}
+                    <span>⚡ Sync Airing Schedules Now</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Airing Metrics Cards */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3.5 pt-2 border-t border-[#1c2232]">
+                <div className="p-4 rounded-xl bg-[#0e111a] border border-[#1b2233]">
+                  <span className="text-[11px] text-gray-400 font-mono">TRACKED RELEASING TITLES</span>
+                  <div className="text-2xl font-black text-white mt-1">
+                    {stats.airingCount} <span className="text-xs font-normal text-gray-500">in Cloud SQL</span>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-[#0e111a] border border-[#1b2233]">
+                  <span className="text-[11px] text-gray-400 font-mono">AUTOMATED BACKGROUND CRON</span>
+                  <div className="text-2xl font-black text-emerald-400 mt-1 flex items-center gap-2">
+                    <span>Every 30 Min</span>
+                    {airingSettings.autoSyncEnabled && (
+                      <span className="text-xs px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-semibold">Running</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-[#0e111a] border border-[#1b2233]">
+                  <span className="text-[11px] text-gray-400 font-mono">NEXT AUTO-CHECK TICKER</span>
+                  <div className="text-2xl font-black text-cyan-400 font-mono mt-1">
+                    {airingSettings.autoSyncEnabled ? formatCountdown(nextSyncSeconds) : "--:--"}
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-[#0e111a] border border-[#1b2233]">
+                  <span className="text-[11px] text-gray-400 font-mono">LAST AIRING SYNC RUN</span>
+                  <div className="text-sm font-bold text-gray-200 mt-2 truncate">
+                    {airingSettings.lastSyncAt ? new Date(airingSettings.lastSyncAt).toLocaleTimeString() : "Pending"}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Live Sync Output Alert Banner (if sync just ran) */}
+            {airingSummary && (
+              <div
+                className={`p-4 rounded-2xl border flex flex-col gap-3 transition-all ${
+                  airingSummary.status === "UPDATED"
+                    ? "bg-emerald-950/30 border-emerald-500/40"
+                    : "bg-blue-950/30 border-blue-500/40"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <span
+                      className={`p-2 rounded-xl ${
+                        airingSummary.status === "UPDATED" ? "bg-emerald-500/20 text-emerald-400" : "bg-blue-500/20 text-blue-400"
+                      }`}
+                    >
+                      {airingSummary.status === "UPDATED" ? <CheckCircle2 className="w-5 h-5" /> : <ShieldCheck className="w-5 h-5" />}
+                    </span>
+                    <div>
+                      <h4 className="text-sm font-bold text-white">
+                        {airingSummary.status === "UPDATED"
+                          ? `Successfully synchronized ${airingSummary.changedCount} airing shows!`
+                          : `Checked ${airingSummary.checkedCount} airing shows — No changes detected`}
+                      </h4>
+                      <p className="text-xs text-gray-400">
+                        {airingSummary.status === "UPDATED"
+                          ? `Applied episode increments and schedule updates to PostgreSQL in ${airingSummary.executionTimeMs}ms.`
+                          : `All ${airingSummary.checkedCount} airing titles are fully up to date with broadcast schedules. Zero database writes needed (${airingSummary.executionTimeMs}ms).`}
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => setAiringSummary(null)}
+                    className="text-xs text-gray-500 hover:text-gray-300"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+
+                {airingSummary.changes && airingSummary.changes.length > 0 && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 pt-2 border-t border-[#1e273a]">
+                    {airingSummary.changes.slice(0, 6).map((c: any, i: number) => (
+                      <div key={i} className="p-2.5 rounded-lg bg-[#0e111a] border border-[#1b2233] flex items-center justify-between text-xs">
+                        <span className="font-semibold text-white truncate max-w-[140px]" title={c.title}>
+                          {c.title}
+                        </span>
+                        <span className="text-[11px] text-emerald-400 font-mono">
+                          {c.formattedOld} ➔ {c.formattedNew}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Airing Sync History & Detailed Log Trail */}
+            <div className="rounded-3xl bg-[#121622] border border-[#1f2638] overflow-hidden shadow-xl">
+              <div className="px-6 py-4 bg-[#141926] border-b border-[#1f2638] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <History className="w-4 h-4 text-emerald-400" />
+                    <span>Airing Synchronization Audit Trail & History</span>
+                  </h3>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    Persistent log of every manual and automated 30-minute sync execution, including zero-change confirmations.
+                  </p>
+                </div>
+
+                <button
+                  onClick={fetchAiringSyncData}
+                  className="px-3 py-1.5 rounded-xl bg-[#181d2a] hover:bg-[#20273a] text-gray-300 text-xs font-semibold flex items-center gap-1.5 transition-colors self-start sm:self-auto"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Refresh History</span>
+                </button>
+              </div>
+
+              {airingHistory.length === 0 ? (
+                <div className="p-12 text-center text-gray-500">
+                  <Clock className="w-8 h-8 text-gray-600 mx-auto mb-2" />
+                  <p className="text-sm font-semibold text-gray-300">No Airing Sync Logs Recorded Yet</p>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Click &quot;Sync Airing Schedules Now&quot; above to run your first broadcast schedule synchronization!
+                  </p>
+                </div>
+              ) : (
+                <div className="divide-y divide-[#1a2030]">
+                  {airingHistory.map((item: any) => {
+                    const isExpanded = expandedLogId === item.id;
+                    const details = item.details || {};
+                    const changesList = details.changes || [];
+
+                    return (
+                      <div key={item.id} className="p-4 sm:p-5 hover:bg-[#141824] transition-colors">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex items-start sm:items-center gap-3">
+                            <span
+                              className={`px-2.5 py-1 rounded-md text-[10px] font-bold tracking-wider uppercase shrink-0 ${
+                                item.status === "UPDATED"
+                                  ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                                  : item.status === "NO_CHANGE"
+                                  ? "bg-blue-500/20 text-blue-300 border border-blue-500/30"
+                                  : "bg-rose-500/20 text-rose-300 border border-rose-500/30"
+                              }`}
+                            >
+                              {item.status === "UPDATED" ? "🔄 UPDATED" : item.status === "NO_CHANGE" ? "✅ NO CHANGE" : "FAILED"}
+                            </span>
+
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h4 className="text-xs sm:text-sm font-bold text-white">
+                                  {item.status === "UPDATED"
+                                    ? `Synchronized ${item.countProcessed} Airing Titles`
+                                    : `Checked ${details.checkedCount || item.countProcessed} Titles — Up To Date`}
+                                </h4>
+                                <span className="text-[10px] px-2 py-0.2 rounded bg-gray-800 text-gray-400 font-mono">
+                                  {details.trigger === "auto_cron" ? "30-Min Cron" : "1-Click Manual"}
+                                </span>
+                              </div>
+
+                              <p className="text-xs text-gray-400 mt-0.5">
+                                {details.message ||
+                                  (item.status === "UPDATED"
+                                    ? `Updated ${item.countProcessed} anime rows in database.`
+                                    : `No changes detected. All countdowns are current.`)}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-3 self-end sm:self-auto shrink-0">
+                            <div className="text-right text-[11px] font-mono text-gray-400">
+                              <div>{new Date(item.createdAt).toLocaleDateString()}</div>
+                              <div className="text-gray-500">{new Date(item.createdAt).toLocaleTimeString()}</div>
+                            </div>
+
+                            {changesList.length > 0 && (
+                              <button
+                                onClick={() => setExpandedLogId(isExpanded ? null : item.id)}
+                                className="px-3 py-1.5 rounded-lg bg-[#1a2130] hover:bg-[#232c40] text-xs font-semibold text-gray-300 flex items-center gap-1 transition-colors"
+                              >
+                                <span>{isExpanded ? "Hide Diffs" : `View ${changesList.length} Diffs`}</span>
+                                {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Expandable Diffs List */}
+                        {isExpanded && changesList.length > 0 && (
+                          <div className="mt-4 pt-4 border-t border-[#1c2234] grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                            {changesList.map((ch: any, idx: number) => (
+                              <div
+                                key={idx}
+                                className="p-3 rounded-xl bg-[#0c0f17] border border-[#1b2234] flex items-center gap-3"
+                              >
+                                {ch.cover_image_url ? (
+                                  <div className="relative w-8 h-10 rounded overflow-hidden shrink-0 bg-gray-900">
+                                    <Image src={ch.cover_image_url} alt="" fill className="object-cover" />
+                                  </div>
+                                ) : (
+                                  <div className="w-8 h-10 rounded bg-gray-800 shrink-0 flex items-center justify-center text-[8px] text-gray-500">
+                                    N/A
+                                  </div>
+                                )}
+                                <div className="overflow-hidden flex-1">
+                                  <span className="text-[10px] text-gray-500 font-mono">#{ch.anilist_id} • {ch.label}</span>
+                                  <h5 className="text-xs font-bold text-white truncate" title={ch.title}>
+                                    {ch.title}
+                                  </h5>
+                                  <div className="flex items-center gap-1.5 text-[10px] font-mono mt-0.5">
+                                    <span className="text-rose-400 line-through truncate max-w-[80px]">{ch.formattedOld}</span>
+                                    <ArrowRight className="w-2.5 h-2.5 text-gray-500 shrink-0" />
+                                    <span className="text-emerald-400 font-bold truncate max-w-[90px]">{ch.formattedNew}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* TAB: 10,000+ CATALOG AUDIT & DIFF REVIEW */}
+        {/* ========================================================================= */}
+        {activeTab === "audit" && (
+          <div className="flex flex-col gap-6">
+            {/* Header & Controller */}
+            <div className="p-6 rounded-3xl bg-[#121622] border border-[#1f2638] flex flex-col gap-5 shadow-xl">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-purple-500/10 text-purple-400 border border-purple-500/20 text-[10px] font-bold mb-1.5">
+                    <ListCheck className="w-3 h-3" />
+                    <span>10,000+ CATALOG AUDITOR & CONFIRMATION ENGINE</span>
+                  </div>
+                  <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                    <span>Catalog Diff & Approval Control Center</span>
+                  </h2>
+                  <p className="text-xs text-gray-400 mt-0.5 max-w-3xl">
+                    Cross-checks your 14,883 anime database against AniList. Inspect score updates, finalized episode counts, status changes, and new trailers with selective checkboxes before writing to Cloud SQL.
+                  </p>
+                </div>
+
+                {/* Audit Actions */}
+                <div className="flex flex-wrap items-center gap-2.5">
+                  {auditRunning ? (
+                    <button
+                      onClick={handleStopCatalogAudit}
+                      className="px-5 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold transition-all flex items-center gap-2 shadow-lg shadow-amber-900/30"
+                    >
+                      <Pause className="w-4 h-4" />
+                      <span>Pause Audit</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleStartCatalogAudit}
+                      className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 text-white text-xs font-bold transition-all shadow-lg shadow-purple-900/30 flex items-center gap-2"
+                    >
+                      <Play className="w-4 h-4" />
+                      <span>🚀 Launch Catalog Audit</span>
+                    </button>
+                  )}
+
+                  {pendingDiffs.length > 0 && (
+                    <button
+                      onClick={() => {
+                        setPendingDiffs([]);
+                        setSelectedDiffIds(new Set());
+                      }}
+                      className="px-3.5 py-2.5 rounded-xl bg-[#1a1f2c] hover:bg-[#222838] text-gray-400 hover:text-white text-xs font-semibold border border-[#273044] transition-colors"
+                    >
+                      Clear Queue
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Scope Selector & Target Year */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 pt-2 border-t border-[#1c2232]">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] text-gray-400 font-semibold uppercase">Audit Scope:</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      onClick={() => !auditRunning && setAuditScope("popular")}
+                      className={`px-3 py-2 rounded-xl text-xs font-semibold border transition-all ${
+                        auditScope === "popular"
+                          ? "bg-purple-500/20 text-purple-300 border-purple-500/50"
+                          : "bg-[#0e111a] text-gray-400 border-[#1f2638] hover:text-white"
+                      }`}
+                    >
+                      Top 1,000 Popular
+                    </button>
+                    <button
+                      onClick={() => !auditRunning && setAuditScope("recent")}
+                      className={`px-3 py-2 rounded-xl text-xs font-semibold border transition-all ${
+                        auditScope === "recent"
+                          ? "bg-purple-500/20 text-purple-300 border-purple-500/50"
+                          : "bg-[#0e111a] text-gray-400 border-[#1f2638] hover:text-white"
+                      }`}
+                    >
+                      By Release Year
+                    </button>
+                    <button
+                      onClick={() => !auditRunning && setAuditScope("all")}
+                      className={`px-3 py-2 rounded-xl text-xs font-semibold border transition-all ${
+                        auditScope === "all"
+                          ? "bg-purple-500/20 text-purple-300 border-purple-500/50"
+                          : "bg-[#0e111a] text-gray-400 border-[#1f2638] hover:text-white"
+                      }`}
+                    >
+                      Full 10,000+ Deep
+                    </button>
+                  </div>
+                </div>
+
+                {auditScope === "recent" && (
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[11px] text-gray-400 font-semibold uppercase">Release Year:</label>
+                    <select
+                      value={auditYear}
+                      disabled={auditRunning}
+                      onChange={(e) => setAuditYear(Number(e.target.value))}
+                      className="px-3 py-2 rounded-xl bg-[#0e111a] border border-[#1f2638] text-xs text-white font-medium focus:outline-none"
+                    >
+                      {Array.from({ length: 47 }, (_, i) => 2026 - i).map((y) => (
+                        <option key={y} value={y}>
+                          Year {y} Releases
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] text-gray-400 font-semibold uppercase">Audit Status:</label>
+                  <div className="p-2 rounded-xl bg-[#0e111a] border border-[#1f2638] flex items-center justify-between text-xs">
+                    <span className="text-gray-400">
+                      Audited: <strong className="text-white font-mono">{auditedTotalCount.toLocaleString()}</strong> titles
+                    </span>
+                    <span className="text-purple-400 font-bold font-mono">
+                      {pendingDiffs.length} diffs detected
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Progress Bar when Audit is Active */}
+              {auditRunning && (
+                <div className="space-y-1.5 pt-2">
+                  <div className="flex items-center justify-between text-xs text-gray-400">
+                    <span className="flex items-center gap-1.5 text-purple-300">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      Scanning Page {auditPage} (Throttled at 1.2s to comply with AniList 90 req/min rule)...
+                    </span>
+                    <span className="font-mono text-white font-bold">
+                      {auditedTotalCount.toLocaleString()} scanned
+                    </span>
+                  </div>
+                  <div className="w-full bg-[#161c29] rounded-full h-2.5 overflow-hidden p-0.5 border border-[#232c40]">
+                    <div className="bg-gradient-to-r from-purple-500 via-indigo-500 to-cyan-400 h-1.5 rounded-full animate-pulse w-full" />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Apply Result Banner */}
+            {applyResultBanner && (
+              <div className="p-4 rounded-2xl bg-emerald-950/40 border border-emerald-500/40 flex items-center justify-between">
+                <span className="text-xs sm:text-sm font-bold text-emerald-300 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  <span>{applyResultBanner}</span>
+                </span>
+                <button
+                  onClick={() => setApplyResultBanner(null)}
+                  className="text-xs text-emerald-400 hover:text-white"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {/* Interactive Diff Review & Approval Table */}
+            <div className="rounded-3xl bg-[#121622] border border-[#1f2638] overflow-hidden shadow-xl flex flex-col">
+              {/* Table Toolbar */}
+              <div className="p-5 bg-[#141926] border-b border-[#1f2638] flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                {/* Left: Search & Type Filter */}
+                <div className="flex flex-wrap items-center gap-2.5 flex-1">
+                  <div className="relative min-w-[200px] flex-1 max-w-xs">
+                    <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      placeholder="Search diffs by anime title..."
+                      value={diffSearchQuery}
+                      onChange={(e) => setDiffSearchQuery(e.target.value)}
+                      className="w-full pl-9 pr-3 py-1.5 rounded-xl bg-[#0e111a] border border-[#21293c] text-xs text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-1 overflow-x-auto text-xs">
+                    {["ALL", "score", "episodes_count", "status", "youtube_trailer_id", "popularity"].map((f) => (
+                      <button
+                        key={f}
+                        onClick={() => setDiffFilterType(f)}
+                        className={`px-2.5 py-1.5 rounded-lg font-semibold transition-all ${
+                          diffFilterType === f
+                            ? "bg-purple-600 text-white"
+                            : "bg-[#0e111a] text-gray-400 hover:text-white border border-[#202738]"
+                        }`}
+                      >
+                        {f === "ALL"
+                          ? `All Diffs (${pendingDiffs.length})`
+                          : f === "score"
+                          ? "⭐ Ratings"
+                          : f === "episodes_count"
+                          ? "📺 Episodes"
+                          : f === "status"
+                          ? "🏷️ Status"
+                          : f === "youtube_trailer_id"
+                          ? "🎬 Trailers"
+                          : "🔥 Popularity"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Right: Master Checkboxes & Apply Actions */}
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => handleSelectAllDiffs(filteredDiffs)}
+                    className="px-3 py-1.5 rounded-xl bg-[#181d2a] hover:bg-[#20273a] text-xs font-semibold text-gray-300 flex items-center gap-1.5 border border-[#273044]"
+                  >
+                    <CheckSquare className="w-3.5 h-3.5 text-purple-400" />
+                    <span>Select All ({filteredDiffs.length})</span>
+                  </button>
+
+                  <button
+                    onClick={handleDeselectAllDiffs}
+                    className="px-3 py-1.5 rounded-xl bg-[#181d2a] hover:bg-[#20273a] text-xs font-semibold text-gray-400 hover:text-white border border-[#273044]"
+                  >
+                    Deselect All
+                  </button>
+
+                  <button
+                    onClick={handleApplySelectedChanges}
+                    disabled={selectedDiffIds.size === 0 || applyingChanges}
+                    className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold transition-all shadow-md shadow-emerald-900/30 flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    {applyingChanges ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <CheckCheck className="w-3.5 h-3.5" />
+                    )}
+                    <span>Approve & Apply ({selectedDiffIds.size})</span>
+                  </button>
+
+                  <button
+                    onClick={handleApplyAllDiffs}
+                    disabled={pendingDiffs.length === 0 || applyingChanges}
+                    className="px-3.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-all shadow-md shadow-purple-900/30 flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    <span>Apply All ({pendingDiffs.length})</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Diff Table Content */}
+              {filteredDiffs.length === 0 ? (
+                <div className="p-16 text-center text-gray-500">
+                  <ListCheck className="w-10 h-10 text-gray-600 mx-auto mb-3" />
+                  <h4 className="text-sm font-bold text-gray-300">
+                    {pendingDiffs.length === 0 ? "No Pending Diffs Found" : "No Diffs Match Your Filters"}
+                  </h4>
+                  <p className="text-xs text-gray-500 mt-1 max-w-md mx-auto">
+                    {pendingDiffs.length === 0
+                      ? "All titles in the audited range are 100% in sync with AniList! Click 'Launch Catalog Audit' to scan additional pages."
+                      : "Try switching filters or clearing your search query."}
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-[#10131d] text-gray-400 uppercase text-[10px] tracking-wider border-b border-[#1c2232]">
+                      <tr>
+                        <th className="px-4 py-3 w-10">Select</th>
+                        <th className="px-4 py-3">Anime Title</th>
+                        <th className="px-4 py-3">Attribute</th>
+                        <th className="px-4 py-3">Current in Cloud SQL</th>
+                        <th className="px-4 py-3">AniList Live Value</th>
+                        <th className="px-4 py-3">Impact</th>
+                        <th className="px-4 py-3 text-right">Confirm</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#181f2f] text-gray-300">
+                      {filteredDiffs.map((diff: any) => {
+                        const isSelected = selectedDiffIds.has(diff.diffId);
+
+                        return (
+                          <tr
+                            key={diff.diffId}
+                            className={`transition-colors ${isSelected ? "bg-purple-950/15 hover:bg-purple-950/25" : "hover:bg-[#141824]"}`}
+                          >
+                            <td className="px-4 py-3">
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => handleToggleDiffSelection(diff.diffId)}
+                                className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500 border-gray-700 bg-gray-900 cursor-pointer"
+                              />
+                            </td>
+
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-3">
+                                {diff.coverImageUrl ? (
+                                  <div className="relative w-8 h-11 rounded overflow-hidden shrink-0 bg-gray-900">
+                                    <Image src={diff.coverImageUrl} alt="" fill className="object-cover" />
+                                  </div>
+                                ) : (
+                                  <div className="w-8 h-11 rounded bg-gray-800 shrink-0 flex items-center justify-center text-[8px] text-gray-500">
+                                    N/A
+                                  </div>
+                                )}
+                                <div>
+                                  <div className="text-[10px] text-gray-500 font-mono">
+                                    #{diff.anilistId} • {diff.format || "TV"} {diff.seasonYear ? `(${diff.seasonYear})` : ""}
+                                  </div>
+                                  <h5 className="font-bold text-white truncate max-w-xs" title={diff.title}>
+                                    {diff.title}
+                                  </h5>
+                                </div>
+                              </div>
+                            </td>
+
+                            <td className="px-4 py-3">
+                              <span className="px-2 py-0.5 rounded bg-gray-800 text-gray-300 font-semibold text-[11px] border border-gray-700">
+                                {diff.label}
+                              </span>
+                            </td>
+
+                            <td className="px-4 py-3 font-mono">
+                              <span className="px-2 py-1 rounded bg-rose-950/40 text-rose-300 border border-rose-800/40 text-[11px]">
+                                {diff.formattedOld}
+                              </span>
+                            </td>
+
+                            <td className="px-4 py-3 font-mono">
+                              <span className="px-2 py-1 rounded bg-emerald-950/40 text-emerald-300 border border-emerald-800/40 text-[11px] font-bold">
+                                {diff.formattedNew}
+                              </span>
+                            </td>
+
+                            <td className="px-4 py-3">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                  diff.impact === "HIGH"
+                                    ? "bg-rose-500/20 text-rose-300 border border-rose-500/30"
+                                    : diff.impact === "MEDIUM"
+                                    ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                    : "bg-blue-500/20 text-blue-300 border border-blue-500/30"
+                                }`}
+                              >
+                                {diff.impact}
+                              </span>
+                            </td>
+
+                            <td className="px-4 py-3 text-right">
+                              <button
+                                onClick={() => handleToggleDiffSelection(diff.diffId)}
+                                className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-all ${
+                                  isSelected
+                                    ? "bg-purple-600 text-white"
+                                    : "bg-gray-800 text-gray-400 hover:text-white"
+                                }`}
+                              >
+                                {isSelected ? "Approved ✓" : "Review"}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
