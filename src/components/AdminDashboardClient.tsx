@@ -50,6 +50,9 @@ import {
   Palette,
   FileText,
   Link as LinkIcon,
+  Music,
+  Mic,
+  MessageSquare,
 } from "lucide-react";
 import Navbar from "./Navbar";
 
@@ -122,7 +125,7 @@ interface AnimeRecord {
 }
 
 export default function AdminDashboardClient() {
-  const [activeTab, setActiveTab] = useState<"overview" | "airing" | "audit" | "ingest" | "database">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "airing" | "audit" | "ingest" | "database" | "extended">("overview");
 
   // Database stats & status
   const [stats, setStats] = useState<DbStats>({
@@ -238,6 +241,34 @@ export default function AdminDashboardClient() {
   const [newLinkAffiliate, setNewLinkAffiliate] = useState("");
   const [newLinkIsOfficial, setNewLinkIsOfficial] = useState(true);
   const [isAddingLink, setIsAddingLink] = useState(false);
+
+  // Extended Media Suite State (Episodes, Themes, Dubs, Reviews)
+  const [extendedStats, setExtendedStats] = useState<{
+    totalEpisodes: number;
+    totalThemes: number;
+    totalDubs: number;
+    totalReviews: number;
+  }>({
+    totalEpisodes: 0,
+    totalThemes: 0,
+    totalDubs: 0,
+    totalReviews: 0,
+  });
+  const [extendedSyncLoading, setExtendedSyncLoading] = useState(false);
+  const [extendedSearchId, setExtendedSearchId] = useState("16498");
+  const [extendedBatchCount, setExtendedBatchCount] = useState(10);
+  const [extendedBatchType, setExtendedBatchType] = useState<"popular" | "airing">("popular");
+  const [selectedExtendedAnimeId, setSelectedExtendedAnimeId] = useState<number | null>(16498);
+  const [selectedExtendedData, setSelectedExtendedData] = useState<{
+    episodes: any[];
+    themes: any[];
+    dubs: any[];
+    reviews: any[];
+  } | null>(null);
+  const [loadingExtendedDetail, setLoadingExtendedDetail] = useState(false);
+  const [extendedSubTab, setExtendedSubTab] = useState<"episodes" | "themes" | "dubs" | "reviews">("episodes");
+  const [extendedResultBanner, setExtendedResultBanner] = useState<string | null>(null);
+  const [dubLanguageFilter, setDubLanguageFilter] = useState<string>("ALL");
 
   const addLog = (msg: string) => {
     setIngestLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 100)]);
@@ -555,6 +586,132 @@ export default function AdminDashboardClient() {
     }
   };
 
+  // Extended Media Handlers
+  const fetchExtendedStats = async () => {
+    try {
+      const res = await fetch("/api/admin/extended-sync?stats=true");
+      const data = await res.json();
+      if (data.success && data.stats) {
+        setExtendedStats(data.stats);
+      }
+    } catch (err) {
+      console.error("Error fetching extended stats:", err);
+    }
+  };
+
+  const loadExtendedAnimeData = async (animeId: number) => {
+    setSelectedExtendedAnimeId(animeId);
+    setLoadingExtendedDetail(true);
+    try {
+      const res = await fetch(`/api/admin/extended-sync?animeId=${animeId}`);
+      const data = await res.json();
+      if (data.success && data.data) {
+        setSelectedExtendedData(data.data);
+      }
+    } catch (err) {
+      console.error("Error loading extended anime data:", err);
+    } finally {
+      setLoadingExtendedDetail(false);
+    }
+  };
+
+  const handleSyncSingleExtended = async (idToSync?: number) => {
+    const targetId = idToSync || parseInt(extendedSearchId, 10);
+    if (!targetId || isNaN(targetId) || extendedSyncLoading) return;
+
+    setExtendedSyncLoading(true);
+    setExtendedResultBanner(null);
+    addLog(`⚡ Initiating Extended Data Sync for Anime #${targetId}...`);
+
+    try {
+      const res = await fetch("/api/admin/extended-sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "sync_anime", animeId: targetId }),
+      });
+      const data = await res.json();
+
+      if (data.success && data.result) {
+        const r = data.result;
+        setExtendedResultBanner(
+          `✅ Successfully synced "${r.title}" (#${r.animeId}): +${r.episodesCount} episodes, +${r.themesCount} theme songs, +${r.dubsCount} dub cast roles, +${r.reviewsCount} reviews!`
+        );
+        addLog(
+          `✓ Extended sync completed for #${r.animeId} (${r.title}): ${r.episodesCount} eps, ${r.themesCount} themes, ${r.dubsCount} dubs, ${r.reviewsCount} reviews.`
+        );
+        if (data.stats) setExtendedStats(data.stats);
+        await loadExtendedAnimeData(targetId);
+      } else {
+        setExtendedResultBanner(`❌ Error: ${data.error || "Failed to sync extended data"}`);
+        addLog(`❌ Extended sync error for #${targetId}: ${data.error}`);
+      }
+    } catch (err: any) {
+      setExtendedResultBanner(`❌ Error: ${err.message}`);
+      addLog(`❌ Extended sync fatal error: ${err.message}`);
+    } finally {
+      setExtendedSyncLoading(false);
+    }
+  };
+
+  const handleBatchExtendedSync = async () => {
+    if (extendedSyncLoading) return;
+    setExtendedSyncLoading(true);
+    setExtendedResultBanner(null);
+    addLog(`🚀 Launching Batch Extended Sync for ${extendedBatchCount} ${extendedBatchType} anime...`);
+
+    try {
+      const res = await fetch("/api/admin/extended-sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "batch_sync",
+          limit: extendedBatchCount,
+          type: extendedBatchType,
+        }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setExtendedResultBanner(
+          `🎉 Batch sync completed! Processed ${data.totalProcessed} anime with zero duplicates.`
+        );
+        addLog(`🎉 Batch extended sync processed ${data.totalProcessed} anime.`);
+        if (data.stats) setExtendedStats(data.stats);
+        if (selectedExtendedAnimeId) {
+          await loadExtendedAnimeData(selectedExtendedAnimeId);
+        }
+      } else {
+        setExtendedResultBanner(`❌ Batch error: ${data.error}`);
+        addLog(`❌ Batch extended sync error: ${data.error}`);
+      }
+    } catch (err: any) {
+      setExtendedResultBanner(`❌ Batch error: ${err.message}`);
+      addLog(`❌ Batch extended fatal error: ${err.message}`);
+    } finally {
+      setExtendedSyncLoading(false);
+    }
+  };
+
+  const handleDeleteExtendedItem = async (delete_type: "episode" | "theme" | "dub" | "review", id: string) => {
+    try {
+      const res = await fetch("/api/admin/extended-sync", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ delete_type, id }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        addLog(`✓ Deleted ${delete_type} #${id}`);
+        fetchExtendedStats();
+        if (selectedExtendedAnimeId) {
+          loadExtendedAnimeData(selectedExtendedAnimeId);
+        }
+      }
+    } catch (err: any) {
+      addLog(`❌ Delete ${delete_type} error: ${err.message}`);
+    }
+  };
+
   // Airing Sync Helpers
   const fetchAiringSyncData = async () => {
     try {
@@ -819,6 +976,7 @@ export default function AdminDashboardClient() {
     fetchSettings();
     fetchAiringSyncData();
     fetchSpotlightAnime();
+    fetchExtendedStats();
   }, []);
 
   useEffect(() => {
@@ -826,6 +984,11 @@ export default function AdminDashboardClient() {
       fetchAnimeRecords(1);
     } else if (activeTab === "airing") {
       fetchAiringSyncData();
+    } else if (activeTab === "extended") {
+      fetchExtendedStats();
+      if (selectedExtendedAnimeId) {
+        loadExtendedAnimeData(selectedExtendedAnimeId);
+      }
     }
   }, [activeTab, statusFilter]);
 
@@ -1200,6 +1363,23 @@ export default function AdminDashboardClient() {
             {stats.totalAnime > 0 && (
               <span className="px-1.5 py-0.2 rounded-full bg-blue-500/20 text-blue-300 text-[10px]">
                 {stats.totalAnime}
+              </span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveTab("extended")}
+            className={`px-3.5 py-2.5 text-xs font-semibold border-b-2 transition-colors flex items-center gap-2 ${
+              activeTab === "extended"
+                ? "border-purple-500 text-purple-400"
+                : "border-transparent text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            <Sparkles className="w-4 h-4 text-purple-400" />
+            <span>Extended Media & Dubs</span>
+            {(extendedStats.totalEpisodes > 0 || extendedStats.totalDubs > 0) && (
+              <span className="px-1.5 py-0.2 rounded-full bg-purple-500/20 text-purple-300 text-[10px]">
+                {extendedStats.totalEpisodes + extendedStats.totalDubs + extendedStats.totalThemes + extendedStats.totalReviews}
               </span>
             )}
           </button>
@@ -2906,6 +3086,18 @@ export default function AdminDashboardClient() {
                                 <Edit3 className="w-3 h-3" />
                                 <span>Edit</span>
                               </button>
+                              <button
+                                onClick={() => {
+                                  setActiveTab("extended");
+                                  setExtendedSearchId(anime.anilist_id.toString());
+                                  loadExtendedAnimeData(anime.anilist_id);
+                                }}
+                                className="px-2.5 py-1 rounded-lg bg-pink-600/15 hover:bg-pink-600/25 text-pink-300 border border-pink-500/30 text-[11px] font-semibold transition-colors flex items-center gap-1"
+                                title="Manage & View Extended Media (Episodes, Themes, Dubs, Reviews)"
+                              >
+                                <Sparkles className="w-3 h-3 text-pink-400" />
+                                <span>Extras</span>
+                              </button>
                             </div>
                           </td>
                         </tr>
@@ -2937,6 +3129,781 @@ export default function AdminDashboardClient() {
                   </button>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* TAB 6: EXTENDED MEDIA & DUBS SUITE */}
+        {/* ========================================================================= */}
+        {activeTab === "extended" && (
+          <div className="flex flex-col gap-6">
+            {/* Header Banner */}
+            <div className="p-6 rounded-3xl bg-gradient-to-r from-purple-950/40 via-indigo-950/30 to-[#121622] border border-purple-500/20 backdrop-blur-xl flex flex-col md:flex-row md:items-center justify-between gap-6 shadow-2xl">
+              <div>
+                <div className="flex flex-wrap items-center gap-2 mb-2">
+                  <span className="px-2.5 py-1 rounded-full bg-purple-500/20 text-purple-300 text-[10px] font-bold uppercase tracking-wider border border-purple-500/30">
+                    Standalone Extensible Engine
+                  </span>
+                  <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 text-[10px] font-bold tracking-wider border border-emerald-500/20 flex items-center gap-1">
+                    <ShieldCheck className="w-3 h-3" />
+                    Zero Duplicates Guaranteed
+                  </span>
+                  <span className="px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-400 text-[10px] font-bold tracking-wider border border-blue-500/20 flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    Rate-Limit Pacing
+                  </span>
+                </div>
+                <h2 className="text-2xl font-black text-white tracking-tight flex items-center gap-2">
+                  <Sparkles className="w-6 h-6 text-purple-400" />
+                  Extended Media, Dubs & Community Suite
+                </h2>
+                <p className="text-sm text-gray-400 mt-1 max-w-2xl leading-relaxed">
+                  Dedicated, decoupled synchronization for episode guides, opening/ending OSTs, multilingual dub voice actors, and in-depth community reviews. Completely modular and independent from core catalog sync.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={fetchExtendedStats}
+                  className="px-4 py-2.5 rounded-xl bg-[#1b2234] hover:bg-[#232c44] text-gray-200 border border-gray-700/50 text-xs font-semibold flex items-center gap-2 transition-all hover:border-purple-500/40 shadow-lg"
+                >
+                  <RefreshCw className="w-4 h-4 text-purple-400" />
+                  <span>Refresh Counts</span>
+                </button>
+              </div>
+            </div>
+
+            {/* 4 Metric KPI Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* Episodes Card */}
+              <div className="p-5 rounded-2xl bg-[#121622] border border-[#232c42] hover:border-purple-500/40 transition-all flex flex-col justify-between group shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                    Episode Guides
+                  </span>
+                  <div className="p-2 rounded-xl bg-purple-500/10 text-purple-400 group-hover:bg-purple-500/20 transition-colors">
+                    <Film className="w-5 h-5" />
+                  </div>
+                </div>
+                <div className="mt-4">
+                  <div className="text-3xl font-black text-white tracking-tight">
+                    {extendedStats.totalEpisodes.toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-gray-400 mt-1">
+                    Titles, Synopses, Stills & Filler Flags
+                  </div>
+                </div>
+              </div>
+
+              {/* Themes Card */}
+              <div className="p-5 rounded-2xl bg-[#121622] border border-[#232c42] hover:border-indigo-500/40 transition-all flex flex-col justify-between group shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                    Theme Songs (OSTs)
+                  </span>
+                  <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 group-hover:bg-indigo-500/20 transition-colors">
+                    <Music className="w-5 h-5" />
+                  </div>
+                </div>
+                <div className="mt-4">
+                  <div className="text-3xl font-black text-white tracking-tight">
+                    {extendedStats.totalThemes.toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-gray-400 mt-1">
+                    OP & ED Tracks with Artist Credits
+                  </div>
+                </div>
+              </div>
+
+              {/* Dub Casts Card */}
+              <div className="p-5 rounded-2xl bg-[#121622] border border-[#232c42] hover:border-pink-500/40 transition-all flex flex-col justify-between group shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                    Multilingual Dub Casts
+                  </span>
+                  <div className="p-2 rounded-xl bg-pink-500/10 text-pink-400 group-hover:bg-pink-500/20 transition-colors">
+                    <Mic className="w-5 h-5" />
+                  </div>
+                </div>
+                <div className="mt-4">
+                  <div className="text-3xl font-black text-white tracking-tight">
+                    {extendedStats.totalDubs.toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-gray-400 mt-1">
+                    English, Spanish, French, German & More
+                  </div>
+                </div>
+              </div>
+
+              {/* Reviews Card */}
+              <div className="p-5 rounded-2xl bg-[#121622] border border-[#232c42] hover:border-emerald-500/40 transition-all flex flex-col justify-between group shadow-lg">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                    Community Reviews
+                  </span>
+                  <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400 group-hover:bg-emerald-500/20 transition-colors">
+                    <MessageSquare className="w-5 h-5" />
+                  </div>
+                </div>
+                <div className="mt-4">
+                  <div className="text-3xl font-black text-white tracking-tight">
+                    {extendedStats.totalReviews.toLocaleString()}
+                  </div>
+                  <div className="text-[11px] text-gray-400 mt-1">
+                    Verified User Essays & Critic Scores
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Notification Banner */}
+            {extendedResultBanner && (
+              <div
+                className={`p-4 rounded-2xl border text-sm font-medium flex items-center justify-between gap-3 ${
+                  extendedResultBanner.startsWith("✅") || extendedResultBanner.startsWith("🎉")
+                    ? "bg-emerald-950/40 border-emerald-500/30 text-emerald-300"
+                    : "bg-rose-950/40 border-rose-500/30 text-rose-300"
+                }`}
+              >
+                <span>{extendedResultBanner}</span>
+                <button
+                  onClick={() => setExtendedResultBanner(null)}
+                  className="text-gray-400 hover:text-white"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            {/* Control Panels: Single Sync vs Batch Sync */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* PANEL 1: Single Anime Targeted Ingestion */}
+              <div className="p-6 rounded-3xl bg-[#121622] border border-[#232c42] flex flex-col justify-between shadow-xl">
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <div className="p-2 rounded-xl bg-purple-500/10 text-purple-400">
+                        <Zap className="w-4 h-4" />
+                      </div>
+                      <h3 className="font-bold text-white text-base">Targeted Single Anime Sync</h3>
+                    </div>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                      Real-Time
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-400 mb-4">
+                    Enter any AniList ID to fetch all episode guides, theme songs, multilingual dub voice actors, and community reviews in a single atomic operation.
+                  </p>
+
+                  <div className="flex gap-2 mb-3">
+                    <input
+                      type="number"
+                      value={extendedSearchId}
+                      onChange={(e) => setExtendedSearchId(e.target.value)}
+                      placeholder="e.g. 16498 (Attack on Titan)"
+                      className="flex-1 bg-[#181e2c] border border-gray-700/60 rounded-xl px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-500 font-mono"
+                    />
+                    <button
+                      onClick={() => handleSyncSingleExtended()}
+                      disabled={extendedSyncLoading || !extendedSearchId}
+                      className="px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-bold text-xs flex items-center gap-2 transition-all shadow-lg shadow-purple-600/20"
+                    >
+                      {extendedSyncLoading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Zap className="w-4 h-4" />
+                      )}
+                      <span>Sync & Upsert</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        const id = parseInt(extendedSearchId, 10);
+                        if (id) loadExtendedAnimeData(id);
+                      }}
+                      disabled={loadingExtendedDetail || !extendedSearchId}
+                      className="px-4 py-2.5 rounded-xl bg-[#1b2234] hover:bg-[#232c44] text-gray-300 border border-gray-700/60 font-semibold text-xs transition-colors"
+                      title="Load cached DB data"
+                    >
+                      {loadingExtendedDetail ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Search className="w-4 h-4" />
+                      )}
+                    </button>
+                  </div>
+
+                  {/* Preset Fast Chips */}
+                  <div className="mt-3">
+                    <span className="text-[11px] text-gray-400 font-medium block mb-2">
+                      Quick Select Popular Titles:
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[
+                        { name: "Attack on Titan", id: 16498 },
+                        { name: "Frieren", id: 154587 },
+                        { name: "Demon Slayer", id: 101922 },
+                        { name: "Jujutsu Kaisen", id: 113415 },
+                        { name: "Solo Leveling", id: 151807 },
+                        { name: "One Piece", id: 21 },
+                        { name: "Chainsaw Man", id: 127230 },
+                        { name: "Death Note", id: 1535 },
+                      ].map((preset) => (
+                        <button
+                          key={preset.id}
+                          onClick={() => {
+                            setExtendedSearchId(preset.id.toString());
+                            loadExtendedAnimeData(preset.id);
+                          }}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                            selectedExtendedAnimeId === preset.id
+                              ? "bg-purple-600 text-white shadow-md shadow-purple-600/30"
+                              : "bg-[#181e2c] hover:bg-[#222a3d] text-gray-400 hover:text-gray-200 border border-[#252f44]"
+                          }`}
+                        >
+                          {preset.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* PANEL 2: Batch Extended Ingestion Engine */}
+              <div className="p-6 rounded-3xl bg-[#121622] border border-[#232c42] flex flex-col justify-between shadow-xl">
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400">
+                        <Layers className="w-4 h-4" />
+                      </div>
+                      <h3 className="font-bold text-white text-base">Batch Catalog Enrichment</h3>
+                    </div>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      Sequential Safe
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-400 mb-4">
+                    Sequentially iterate through your existing Cloud SQL catalog and enrich each anime with episode guides, theme songs, dub casts, and reviews.
+                  </p>
+
+                  <div className="grid grid-cols-2 gap-3 mb-4">
+                    <div>
+                      <label className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">
+                        Target Selection
+                      </label>
+                      <select
+                        value={extendedBatchType}
+                        onChange={(e) => setExtendedBatchType(e.target.value as any)}
+                        className="w-full bg-[#181e2c] border border-gray-700/60 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                      >
+                        <option value="popular">Top Popular Anime</option>
+                        <option value="airing">Currently Airing Anime</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-gray-400 font-semibold uppercase tracking-wider block mb-1.5">
+                        Batch Quantity
+                      </label>
+                      <select
+                        value={extendedBatchCount}
+                        onChange={(e) => setExtendedBatchCount(Number(e.target.value))}
+                        className="w-full bg-[#181e2c] border border-gray-700/60 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                      >
+                        <option value={5}>5 Anime</option>
+                        <option value={10}>10 Anime</option>
+                        <option value={25}>25 Anime</option>
+                        <option value={50}>50 Anime</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-blue-950/30 border border-blue-500/20 text-[11px] text-blue-300 flex items-center gap-2 mb-4">
+                    <ShieldCheck className="w-4 h-4 text-blue-400 shrink-0" />
+                    <span>Throttled at 800ms per anime to prevent API rate limiting and connection pooling exhaustion.</span>
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleBatchExtendedSync}
+                  disabled={extendedSyncLoading}
+                  className="w-full py-3 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-lg shadow-indigo-600/20"
+                >
+                  {extendedSyncLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Ingesting Batch in Background...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4" />
+                      <span>Launch Batch Extended Ingestion ({extendedBatchCount} Anime)</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Interactive Data Browser */}
+            <div className="p-6 rounded-3xl bg-[#121622] border border-[#232c42] shadow-xl">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-[#232c42]">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-purple-500/10 text-purple-400">
+                    <Film className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-white text-base flex items-center gap-2">
+                      <span>Anime #{selectedExtendedAnimeId || "—"}</span>
+                      {selectedExtendedAnimeId && (
+                        <Link
+                          href={`/anime/${selectedExtendedAnimeId}`}
+                          target="_blank"
+                          className="text-xs text-purple-400 hover:text-purple-300 flex items-center gap-1 font-normal underline"
+                        >
+                          View Public Page <ExternalLink className="w-3 h-3" />
+                        </Link>
+                      )}
+                    </h3>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      Explore currently stored episodes, opening/closing themes, multilingual dubs, and user reviews.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Sub Tab Navigation */}
+                <div className="flex items-center gap-1.5 p-1 rounded-xl bg-[#181e2c] border border-gray-700/50">
+                  <button
+                    onClick={() => setExtendedSubTab("episodes")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                      extendedSubTab === "episodes"
+                        ? "bg-purple-600 text-white shadow-md shadow-purple-600/30"
+                        : "text-gray-400 hover:text-gray-200"
+                    }`}
+                  >
+                    <Film className="w-3.5 h-3.5" />
+                    <span>Episodes</span>
+                    <span className="px-1.5 py-0.2 rounded-full bg-black/30 text-[10px]">
+                      {selectedExtendedData?.episodes.length || 0}
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => setExtendedSubTab("themes")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                      extendedSubTab === "themes"
+                        ? "bg-purple-600 text-white shadow-md shadow-purple-600/30"
+                        : "text-gray-400 hover:text-gray-200"
+                    }`}
+                  >
+                    <Music className="w-3.5 h-3.5" />
+                    <span>Themes (OST)</span>
+                    <span className="px-1.5 py-0.2 rounded-full bg-black/30 text-[10px]">
+                      {selectedExtendedData?.themes.length || 0}
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => setExtendedSubTab("dubs")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                      extendedSubTab === "dubs"
+                        ? "bg-purple-600 text-white shadow-md shadow-purple-600/30"
+                        : "text-gray-400 hover:text-gray-200"
+                    }`}
+                  >
+                    <Mic className="w-3.5 h-3.5" />
+                    <span>Dub Cast</span>
+                    <span className="px-1.5 py-0.2 rounded-full bg-black/30 text-[10px]">
+                      {selectedExtendedData?.dubs.length || 0}
+                    </span>
+                  </button>
+
+                  <button
+                    onClick={() => setExtendedSubTab("reviews")}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                      extendedSubTab === "reviews"
+                        ? "bg-purple-600 text-white shadow-md shadow-purple-600/30"
+                        : "text-gray-400 hover:text-gray-200"
+                    }`}
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    <span>Reviews</span>
+                    <span className="px-1.5 py-0.2 rounded-full bg-black/30 text-[10px]">
+                      {selectedExtendedData?.reviews.length || 0}
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Data Content Body */}
+              <div className="pt-5">
+                {loadingExtendedDetail ? (
+                  <div className="py-20 flex flex-col items-center justify-center gap-3">
+                    <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
+                    <span className="text-sm text-gray-400">Loading stored extras from Cloud SQL...</span>
+                  </div>
+                ) : !selectedExtendedData || (
+                    selectedExtendedData.episodes.length === 0 &&
+                    selectedExtendedData.themes.length === 0 &&
+                    selectedExtendedData.dubs.length === 0 &&
+                    selectedExtendedData.reviews.length === 0
+                  ) ? (
+                  <div className="py-16 text-center flex flex-col items-center justify-center">
+                    <Sparkles className="w-12 h-12 text-gray-600 mb-3" />
+                    <h4 className="text-base font-bold text-gray-300">No Extended Records Found</h4>
+                    <p className="text-xs text-gray-500 max-w-md mt-1 mb-4">
+                      Anime #{selectedExtendedAnimeId} has not been synced with extended data yet. Click below to fetch all episodes, OSTs, dubs, and reviews.
+                    </p>
+                    <button
+                      onClick={() => handleSyncSingleExtended(selectedExtendedAnimeId || undefined)}
+                      disabled={extendedSyncLoading}
+                      className="px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs flex items-center gap-2 transition-all shadow-lg shadow-purple-600/20"
+                    >
+                      <Zap className="w-4 h-4" />
+                      <span>Sync Extras for Anime #{selectedExtendedAnimeId}</span>
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {/* SUBTAB 1: EPISODES */}
+                    {extendedSubTab === "episodes" && (
+                      <div>
+                        {selectedExtendedData.episodes.length === 0 ? (
+                          <div className="text-center py-12 text-gray-500 text-xs">
+                            No episode synopsis entries stored for this anime.
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {selectedExtendedData.episodes.map((ep) => (
+                              <div
+                                key={ep.id}
+                                className="rounded-2xl bg-[#181e2c] border border-[#252f44] overflow-hidden flex flex-col justify-between hover:border-purple-500/40 transition-all shadow-md group"
+                              >
+                                <div>
+                                  {/* Thumbnail */}
+                                  <div className="relative aspect-video w-full bg-gray-900 overflow-hidden">
+                                    {ep.thumbnail_url ? (
+                                      <Image
+                                        src={ep.thumbnail_url}
+                                        alt={ep.title || `Episode ${ep.episode_number}`}
+                                        fill
+                                        className="object-cover group-hover:scale-105 transition-transform duration-300"
+                                      />
+                                    ) : (
+                                      <div className="w-full h-full flex items-center justify-center text-gray-700">
+                                        <Film className="w-8 h-8" />
+                                      </div>
+                                    )}
+                                    <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/80 backdrop-blur-md text-[10px] font-bold text-white border border-white/10">
+                                      Episode {ep.episode_number}
+                                    </div>
+                                    {ep.is_filler && (
+                                      <div className="absolute top-2 right-2 px-2 py-0.5 rounded-md bg-amber-500/80 backdrop-blur-md text-[10px] font-bold text-black">
+                                        Filler
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="p-4">
+                                    <h4 className="text-sm font-bold text-white line-clamp-1 mb-1">
+                                      {ep.title || `Episode ${ep.episode_number}`}
+                                    </h4>
+                                    {ep.air_date && (
+                                      <div className="text-[11px] text-gray-400 mb-2 flex items-center gap-1">
+                                        <Calendar className="w-3 h-3 text-purple-400" />
+                                        <span>{new Date(ep.air_date).toLocaleDateString()}</span>
+                                      </div>
+                                    )}
+                                    {ep.synopsis && (
+                                      <p className="text-xs text-gray-400 line-clamp-3 leading-relaxed">
+                                        {ep.synopsis}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="p-3 bg-[#131722] border-t border-[#252f44] flex items-center justify-between">
+                                  {ep.site_url ? (
+                                    <a
+                                      href={ep.site_url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-[11px] text-purple-400 hover:text-purple-300 flex items-center gap-1 font-medium"
+                                    >
+                                      <span>Stream Source</span>
+                                      <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                  ) : (
+                                    <span className="text-[11px] text-gray-600">No site link</span>
+                                  )}
+                                  <button
+                                    onClick={() => handleDeleteExtendedItem("episode", ep.id)}
+                                    className="p-1 rounded text-gray-500 hover:text-rose-400 transition-colors"
+                                    title="Delete episode record"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* SUBTAB 2: THEMES (OSTs) */}
+                    {extendedSubTab === "themes" && (
+                      <div>
+                        {selectedExtendedData.themes.length === 0 ? (
+                          <div className="text-center py-12 text-gray-500 text-xs">
+                            No theme songs (OP/ED) recorded for this anime yet.
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {selectedExtendedData.themes.map((th) => (
+                              <div
+                                key={th.id}
+                                className="p-4 rounded-2xl bg-[#181e2c] border border-[#252f44] flex items-center justify-between gap-4 hover:border-indigo-500/40 transition-all shadow-md group"
+                              >
+                                <div className="flex items-center gap-3">
+                                  <div
+                                    className={`px-2.5 py-1.5 rounded-xl font-black text-xs shrink-0 ${
+                                      th.type === "OPENING"
+                                        ? "bg-purple-500/20 text-purple-300 border border-purple-500/30"
+                                        : "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30"
+                                    }`}
+                                  >
+                                    {th.type === "OPENING" ? "OP" : "ED"} {th.sequence_number}
+                                  </div>
+                                  <div>
+                                    <div className="text-sm font-bold text-white group-hover:text-indigo-300 transition-colors">
+                                      {th.title}
+                                    </div>
+                                    <div className="text-xs text-gray-400 mt-0.5">
+                                      by <span className="text-gray-300 font-medium">{th.artist || "Unknown Artist"}</span>
+                                    </div>
+                                    {th.episodes && (
+                                      <div className="text-[10px] text-gray-500 mt-1">
+                                        Episodes: {th.episodes}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <button
+                                  onClick={() => handleDeleteExtendedItem("theme", th.id)}
+                                  className="p-1.5 rounded-lg text-gray-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors shrink-0"
+                                  title="Delete theme track"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* SUBTAB 3: MULTILINGUAL DUB CAST */}
+                    {extendedSubTab === "dubs" && (
+                      <div>
+                        {selectedExtendedData.dubs.length === 0 ? (
+                          <div className="text-center py-12 text-gray-500 text-xs">
+                            No non-Japanese dub voice actors recorded for this anime yet.
+                          </div>
+                        ) : (
+                          <div>
+                            {/* Language Filter Pills */}
+                            {(() => {
+                              const languages = Array.from(
+                                new Set(selectedExtendedData.dubs.map((d) => d.language).filter(Boolean))
+                              );
+                              const filteredDubs =
+                                dubLanguageFilter === "ALL"
+                                  ? selectedExtendedData.dubs
+                                  : selectedExtendedData.dubs.filter((d) => d.language === dubLanguageFilter);
+
+                              return (
+                                <div>
+                                  <div className="flex items-center gap-2 mb-4 overflow-x-auto pb-2">
+                                    <span className="text-xs text-gray-400 font-semibold shrink-0">
+                                      Filter Language:
+                                    </span>
+                                    <button
+                                      onClick={() => setDubLanguageFilter("ALL")}
+                                      className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+                                        dubLanguageFilter === "ALL"
+                                          ? "bg-pink-600 text-white"
+                                          : "bg-[#181e2c] text-gray-400 hover:text-gray-200"
+                                      }`}
+                                    >
+                                      All ({selectedExtendedData.dubs.length})
+                                    </button>
+                                    {languages.map((lang) => (
+                                      <button
+                                        key={lang}
+                                        onClick={() => setDubLanguageFilter(lang)}
+                                        className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+                                          dubLanguageFilter === lang
+                                            ? "bg-pink-600 text-white"
+                                            : "bg-[#181e2c] text-gray-400 hover:text-gray-200"
+                                        }`}
+                                      >
+                                        {lang} ({selectedExtendedData.dubs.filter((d) => d.language === lang).length})
+                                      </button>
+                                    ))}
+                                  </div>
+
+                                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                                    {filteredDubs.map((dub) => (
+                                      <div
+                                        key={dub.id}
+                                        className="p-3.5 rounded-2xl bg-[#181e2c] border border-[#252f44] flex items-center justify-between gap-3 hover:border-pink-500/40 transition-all shadow-md"
+                                      >
+                                        <div className="flex items-center gap-3">
+                                          {/* Character Avatar */}
+                                          <div className="relative w-11 h-11 rounded-xl overflow-hidden bg-gray-800 shrink-0 border border-white/10">
+                                            {dub.character_image ? (
+                                              <Image
+                                                src={dub.character_image}
+                                                alt={dub.character_name}
+                                                fill
+                                                className="object-cover"
+                                              />
+                                            ) : (
+                                              <div className="w-full h-full flex items-center justify-center text-gray-600 text-[10px]">
+                                                Char
+                                              </div>
+                                            )}
+                                          </div>
+
+                                          <div className="min-w-0">
+                                            <div className="text-xs font-bold text-white truncate">
+                                              {dub.character_name}
+                                            </div>
+                                            <div className="text-[11px] text-pink-300 font-medium truncate flex items-center gap-1 mt-0.5">
+                                              <Mic className="w-3 h-3" />
+                                              <span>{dub.voice_actor_name}</span>
+                                            </div>
+                                            <div className="flex items-center gap-1.5 mt-1">
+                                              <span className="px-1.5 py-0.2 rounded bg-pink-500/20 text-pink-300 text-[9px] font-bold uppercase">
+                                                {dub.language}
+                                              </span>
+                                              <span className="text-[9px] text-gray-500 uppercase">
+                                                {dub.role}
+                                              </span>
+                                            </div>
+                                          </div>
+                                        </div>
+
+                                        <button
+                                          onClick={() => handleDeleteExtendedItem("dub", dub.id)}
+                                          className="p-1.5 rounded-lg text-gray-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors shrink-0"
+                                          title="Delete dub mapping"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* SUBTAB 4: REVIEWS */}
+                    {extendedSubTab === "reviews" && (
+                      <div>
+                        {selectedExtendedData.reviews.length === 0 ? (
+                          <div className="text-center py-12 text-gray-500 text-xs">
+                            No community reviews stored for this anime yet.
+                          </div>
+                        ) : (
+                          <div className="space-y-4">
+                            {selectedExtendedData.reviews.map((rev) => (
+                              <div
+                                key={rev.id}
+                                className="p-5 rounded-2xl bg-[#181e2c] border border-[#252f44] hover:border-emerald-500/40 transition-all shadow-md"
+                              >
+                                <div className="flex items-start justify-between gap-4 mb-3">
+                                  <div className="flex items-center gap-3">
+                                    <div className="relative w-10 h-10 rounded-full overflow-hidden bg-gray-800 shrink-0 border border-white/10">
+                                      {rev.user_avatar_url ? (
+                                        <Image
+                                          src={rev.user_avatar_url}
+                                          alt={rev.user_name}
+                                          fill
+                                          className="object-cover"
+                                        />
+                                      ) : (
+                                        <div className="w-full h-full flex items-center justify-center text-gray-600 font-bold text-xs">
+                                          {rev.user_name.charAt(0)}
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    <div>
+                                      <div className="text-sm font-bold text-white">
+                                        {rev.user_name}
+                                      </div>
+                                      <div className="text-[11px] text-gray-500">
+                                        {rev.created_at ? new Date(rev.created_at).toLocaleDateString() : "Verified Community Review"}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center gap-2">
+                                    {rev.score && (
+                                      <div className="px-2.5 py-1 rounded-xl bg-emerald-500/20 text-emerald-300 font-black text-xs border border-emerald-500/30 flex items-center gap-1">
+                                        <Star className="w-3.5 h-3.5 fill-emerald-400 text-emerald-400" />
+                                        <span>{rev.score}%</span>
+                                      </div>
+                                    )}
+                                    <button
+                                      onClick={() => handleDeleteExtendedItem("review", rev.id)}
+                                      className="p-1.5 rounded-lg text-gray-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                                      title="Delete review"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {rev.summary && (
+                                  <h4 className="text-sm font-bold text-gray-200 mb-2 italic">
+                                    "{rev.summary}"
+                                  </h4>
+                                )}
+
+                                <p className="text-xs text-gray-400 leading-relaxed line-clamp-4 whitespace-pre-line">
+                                  {rev.body}
+                                </p>
+
+                                <div className="mt-3 pt-3 border-t border-[#252f44] flex items-center justify-between text-[11px] text-gray-500">
+                                  <span>Helpful score: +{rev.rating_amount || 0} votes</span>
+                                  {rev.site_url && (
+                                    <a
+                                      href={rev.site_url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="text-emerald-400 hover:underline flex items-center gap-1"
+                                    >
+                                      Read on AniList <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
           </div>
         )}

@@ -111,17 +111,26 @@ export default function FranchiseRelations({ relations, animeId }: FranchiseRela
       {/* Grid of Relations */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
         {edges.map((edge, idx) => {
-          const item = edge.node;
-          const title = item.title.english || item.title.romaji;
+          const item = edge?.node;
+          if (!item) return null;
+          const title =
+            item.title?.english ||
+            item.title?.romaji ||
+            (typeof item.title === "string" ? item.title : "Related Work");
           const isAnime = item.format !== "MANGA" && item.format !== "NOVEL";
           const year = item.seasonYear || item.startDate?.year;
+          const coverUrl =
+            item.coverImage?.extraLarge ||
+            item.coverImage?.large ||
+            item.coverImage?.medium ||
+            (typeof item.coverImage === "string" ? item.coverImage : "/placeholder-cover.jpg");
 
           const cardContent = (
             <div className="p-3 rounded-xl bg-[#141722] border border-[#222736] hover:border-emerald-500/40 hover:bg-[#181c2b] transition-all flex items-center gap-3.5 group h-full shadow-sm hover:shadow-md">
               <div className="w-14 h-20 rounded-lg bg-[#1a1f2e] overflow-hidden flex-shrink-0 border border-[#262c3d] relative">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={item.coverImage.extraLarge || item.coverImage.large || item.coverImage.medium}
+                  src={coverUrl}
                   alt={title}
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                   loading="lazy"

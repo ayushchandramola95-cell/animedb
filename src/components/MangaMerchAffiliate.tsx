@@ -36,15 +36,17 @@ export default function MangaMerchAffiliate({ anime }: MangaMerchAffiliateProps)
   );
 
   const mangaCover =
-    adaptationEdge?.node.coverImage.extraLarge ||
-    adaptationEdge?.node.coverImage.large ||
-    anime.coverImage.extraLarge ||
-    anime.coverImage.large;
+    adaptationEdge?.node?.coverImage?.extraLarge ||
+    adaptationEdge?.node?.coverImage?.large ||
+    anime.coverImage?.extraLarge ||
+    anime.coverImage?.large ||
+    "/placeholder-cover.jpg";
 
   const animeCover =
-    anime.coverImage.extraLarge ||
-    anime.coverImage.large ||
-    anime.coverImage.medium;
+    anime.coverImage?.extraLarge ||
+    anime.coverImage?.large ||
+    anime.coverImage?.medium ||
+    "/placeholder-cover.jpg";
 
   const animeBackdrop = anime.bannerImage || animeCover;
 

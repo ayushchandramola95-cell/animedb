@@ -7,7 +7,9 @@ import { AnimeMedia, OmniSearchResult } from "./types";
 export function mapDbRowToAnimeMedia(
   row: any,
   characters: any[] = [],
-  streamingLinks: any[] = []
+  streamingLinks: any[] = [],
+  episodes: any[] = [],
+  reviews: any[] = []
 ): AnimeMedia {
   const scoreNum = row.score ? Number(row.score) : null;
   const avgScore = scoreNum ? Math.round(scoreNum * 10) : null;
@@ -50,6 +52,30 @@ export function mapDbRowToAnimeMedia(
     icon: null,
     color: null,
   }));
+
+  const streamingEpisodes = episodes.map((ep: any) => ({
+    title: ep.title || `Episode ${ep.episode_number}`,
+    thumbnail: ep.thumbnail_url || null,
+    url: ep.site_url || "#",
+    site: "Official Stream",
+  }));
+
+  const reviewsFormatted = reviews.length > 0 ? {
+    nodes: reviews.map((r: any) => ({
+      id: r.anilist_review_id || r.id || 0,
+      summary: r.summary || "",
+      body: r.body || "",
+      score: r.score || 0,
+      rating: r.score || 0,
+      ratingAmount: r.rating_amount || 0,
+      user: {
+        name: r.user_name || "Community Member",
+        avatar: {
+          medium: r.user_avatar_url || undefined,
+        },
+      },
+    })),
+  } : undefined;
 
   const nextAiringAtTime = row.next_airing_at ? new Date(row.next_airing_at).getTime() : 0;
   const now = Date.now();
@@ -95,6 +121,8 @@ export function mapDbRowToAnimeMedia(
         }
       : null,
     externalLinks: extLinks,
+    streamingEpisodes: streamingEpisodes.length > 0 ? streamingEpisodes : undefined,
+    reviews: reviewsFormatted,
     characters: {
       edges: charEdges,
     },
@@ -109,7 +137,7 @@ export function mapDbRowToAnimeMedia(
  * Fetch full details for a single anime from Cloud SQL
  */
 export async function getAnimeDetailsFromDb(id: number): Promise<AnimeMedia | null> {
-  const [animeRes, charsRes, streamsRes] = await Promise.all([
+  const [animeRes, charsRes, streamsRes, episodesRes, reviewsRes] = await Promise.all([
     query(
       `
       SELECT
@@ -150,11 +178,35 @@ export async function getAnimeDetailsFromDb(id: number): Promise<AnimeMedia | nu
     `,
       [id]
     ),
+    query(
+      `
+      SELECT episode_number, title, thumbnail_url, site_url
+      FROM anime_episodes
+      WHERE anime_id = $1
+      ORDER BY episode_number ASC;
+    `,
+      [id]
+    ).catch(() => ({ rows: [] })),
+    query(
+      `
+      SELECT anilist_review_id, user_name, user_avatar_url, summary, body, score, rating_amount
+      FROM anime_reviews
+      WHERE anime_id = $1
+      ORDER BY rating_amount DESC;
+    `,
+      [id]
+    ).catch(() => ({ rows: [] })),
   ]);
 
   if (animeRes.rows.length === 0) return null;
 
-  return mapDbRowToAnimeMedia(animeRes.rows[0], charsRes.rows, streamsRes.rows);
+  return mapDbRowToAnimeMedia(
+    animeRes.rows[0],
+    charsRes.rows,
+    streamsRes.rows,
+    episodesRes.rows,
+    reviewsRes.rows
+  );
 }
 
 /**
