@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAdvancedBrowseAnime } from "@/lib/anilist";
+import { getAdvancedBrowseAnimeFromDb } from "@/lib/dbAnime";
+import { getDataSourceSetting } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
@@ -24,19 +26,54 @@ export async function GET(request: NextRequest) {
   const provider = searchParams.get("provider") || searchParams.get("platform") || "ALL";
 
   try {
-    const result = await getAdvancedBrowseAnime({
-      genres,
-      format,
-      status,
-      season,
-      year,
-      country,
-      minScore,
-      sort,
-      search,
-      page,
-      perPage,
-    });
+    const source = await getDataSourceSetting();
+    let result;
+
+    if (source === "db") {
+      result = await getAdvancedBrowseAnimeFromDb({
+        genres,
+        format,
+        status,
+        season,
+        year,
+        minScore,
+        sort,
+        search,
+        page,
+        perPage,
+      });
+
+      // If DB browse returned 0 for this page/query, try AniList
+      if (result.media.length === 0 && page === 1 && !search) {
+        result = await getAdvancedBrowseAnime({
+          genres,
+          format,
+          status,
+          season,
+          year,
+          country,
+          minScore,
+          sort,
+          search,
+          page,
+          perPage,
+        });
+      }
+    } else {
+      result = await getAdvancedBrowseAnime({
+        genres,
+        format,
+        status,
+        season,
+        year,
+        country,
+        minScore,
+        sort,
+        search,
+        page,
+        perPage,
+      });
+    }
 
     let media = result.media;
 
@@ -54,6 +91,7 @@ export async function GET(request: NextRequest) {
       count: media.length,
       hasNextPage: result.hasNextPage,
       media,
+      source,
     });
   } catch (error) {
     console.error("Browse API Error:", error);
@@ -63,3 +101,4 @@ export async function GET(request: NextRequest) {
     );
   }
 }
+

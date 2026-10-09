@@ -1,6 +1,8 @@
 import { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { getAnimeDetails } from "@/lib/anilist";
+import { getAnimeDetailsFromDb } from "@/lib/dbAnime";
+import { getDataSourceSetting } from "@/lib/settings";
 import AnimeDetailClient from "@/components/AnimeDetailClient";
 
 export const dynamic = "force-dynamic";
@@ -9,9 +11,21 @@ interface PageProps {
   params: Promise<{ id: string }>;
 }
 
+async function resolveAnime(id: number) {
+  const source = await getDataSourceSetting();
+  if (source === "db") {
+    const dbAnime = await getAnimeDetailsFromDb(id);
+    if (dbAnime) return dbAnime;
+  }
+  return getAnimeDetails(id);
+}
+
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { id } = await params;
-  const anime = await getAnimeDetails(Number(id));
+  const animeId = Number(id);
+  if (isNaN(animeId)) return { title: "Anime Not Found - AnimeDB" };
+
+  const anime = await resolveAnime(animeId);
 
   if (!anime) {
     return {
@@ -43,7 +57,7 @@ export default async function AnimePage({ params }: PageProps) {
     notFound();
   }
 
-  const anime = await getAnimeDetails(animeId);
+  const anime = await resolveAnime(animeId);
 
   if (!anime) {
     notFound();
@@ -51,3 +65,4 @@ export default async function AnimePage({ params }: PageProps) {
 
   return <AnimeDetailClient anime={anime} />;
 }
+

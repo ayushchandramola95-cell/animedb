@@ -29,6 +29,7 @@ import {
   TrendingUp,
   AlertCircle,
   CheckCircle2,
+  Globe,
 } from "lucide-react";
 import Navbar from "./Navbar";
 
@@ -134,6 +135,10 @@ export default function AdminDashboardClient() {
   const [yearPage, setYearPage] = useState<number>(1);
   const [yearSessionAdded, setYearSessionAdded] = useState<number>(0);
 
+  // Global Data Source state
+  const [dataSource, setDataSource] = useState<"db" | "anilist">("db");
+  const [updatingSource, setUpdatingSource] = useState(false);
+
   // Database browser state
   const [animeList, setAnimeList] = useState<AnimeRecord[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -150,6 +155,47 @@ export default function AdminDashboardClient() {
 
   const addLog = (msg: string) => {
     setIngestLogs((prev) => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev.slice(0, 100)]);
+  };
+
+  // Fetch Settings (Data Source)
+  const fetchSettings = async () => {
+    try {
+      const res = await fetch("/api/admin/settings");
+      const data = await res.json();
+      if (data.success && data.dataSource) {
+        setDataSource(data.dataSource);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  // Toggle Data Source
+  const handleToggleDataSource = async (target: "db" | "anilist") => {
+    if (dataSource === target || updatingSource) return;
+    setUpdatingSource(true);
+    try {
+      const res = await fetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dataSource: target }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setDataSource(data.dataSource);
+        addLog(
+          `⚡ Public Website Data Source switched to: ${
+            data.dataSource === "db"
+              ? "Google Cloud SQL (14,883+ titles, ~5ms speed, no rate limits)"
+              : "Live AniList GraphQL API proxy"
+          }`
+        );
+      }
+    } catch (err: any) {
+      addLog(`❌ Failed to switch data source: ${err.message}`);
+    } finally {
+      setUpdatingSource(false);
+    }
   };
 
   // Fetch Stats
@@ -216,6 +262,7 @@ export default function AdminDashboardClient() {
 
   useEffect(() => {
     fetchStats();
+    fetchSettings();
   }, []);
 
   useEffect(() => {
@@ -444,8 +491,50 @@ export default function AdminDashboardClient() {
             </p>
           </div>
 
-          {/* Database Live Heartbeat Badge */}
-          <div className="flex items-center gap-3 self-start md:self-auto">
+          {/* Controls: Data Source Toggle & Cloud SQL Heartbeat Badge */}
+          <div className="flex flex-wrap items-center gap-3 self-start md:self-auto">
+            {/* Global Public Site Data Source Toggle */}
+            <div className="p-1 rounded-xl bg-[#131722] border border-[#202738] flex items-center gap-1 shadow-sm">
+              <span className="text-[11px] text-gray-400 font-medium px-2 hidden sm:inline">
+                Site Data Source:
+              </span>
+
+              <button
+                onClick={() => handleToggleDataSource("db")}
+                disabled={updatingSource}
+                title="Serve website directly from your Google Cloud SQL database (14,883 titles, ~5ms speed, zero rate limits)"
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  dataSource === "db"
+                    ? "bg-gradient-to-r from-emerald-600 to-blue-600 text-white shadow-md shadow-emerald-900/30 ring-1 ring-emerald-400/40"
+                    : "text-gray-400 hover:text-gray-200"
+                } disabled:opacity-50`}
+              >
+                <Database className="w-3.5 h-3.5" />
+                <span>Cloud SQL (14.8k)</span>
+                {dataSource === "db" && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse ml-0.5"></span>
+                )}
+              </button>
+
+              <button
+                onClick={() => handleToggleDataSource("anilist")}
+                disabled={updatingSource}
+                title="Serve website live through AniList GraphQL API proxy"
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  dataSource === "anilist"
+                    ? "bg-blue-600 text-white shadow-md shadow-blue-900/30 ring-1 ring-blue-400/40"
+                    : "text-gray-400 hover:text-gray-200"
+                } disabled:opacity-50`}
+              >
+                <Globe className="w-3.5 h-3.5" />
+                <span>AniList API</span>
+                {dataSource === "anilist" && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-300 animate-pulse ml-0.5"></span>
+                )}
+              </button>
+            </div>
+
+            {/* Database Live Heartbeat Badge */}
             <div className="px-3.5 py-2 rounded-xl bg-[#131722] border border-[#202738] flex items-center gap-2.5 shadow-sm">
               <span className="relative flex h-2.5 w-2.5">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
@@ -519,6 +608,60 @@ export default function AdminDashboardClient() {
         {/* ========================================================================= */}
         {activeTab === "overview" && (
           <div className="flex flex-col gap-6">
+            {/* Live Data Source Indicator Banner */}
+            <div
+              className={`p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                dataSource === "db"
+                  ? "bg-gradient-to-r from-emerald-950/30 via-[#131926] to-[#121622] border-emerald-500/30"
+                  : "bg-gradient-to-r from-blue-950/30 via-[#131926] to-[#121622] border-blue-500/30"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <div
+                  className={`p-2.5 rounded-xl ${
+                    dataSource === "db" ? "bg-emerald-500/20 text-emerald-400" : "bg-blue-500/20 text-blue-400"
+                  }`}
+                >
+                  {dataSource === "db" ? <Database className="w-5 h-5" /> : <Globe className="w-5 h-5" />}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-white">
+                      Active Website Source:{" "}
+                      <span className={dataSource === "db" ? "text-emerald-400" : "text-blue-400"}>
+                        {dataSource === "db" ? "Google Cloud SQL (Database-First)" : "Live AniList GraphQL API"}
+                      </span>
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        dataSource === "db"
+                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                          : "bg-blue-500/20 text-blue-300 border border-blue-500/30"
+                      }`}
+                    >
+                      {dataSource === "db" ? "⚡ FAST (~5ms) • NO RATE LIMITS" : "🌐 LIVE PROXY"}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-gray-400 mt-0.5">
+                    {dataSource === "db"
+                      ? "All public visitors on the Homepage, Browse, Search, and Detail pages are served directly from your 14,883 stored Cloud SQL records with zero rate limits."
+                      : "The website is proxying requests live to AniList. If AniList throttles (HTTP 429), you can switch to Cloud SQL anytime."}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => handleToggleDataSource(dataSource === "db" ? "anilist" : "db")}
+                  disabled={updatingSource}
+                  className="px-3.5 py-1.5 rounded-xl bg-[#192030] hover:bg-[#222b40] text-xs font-semibold text-white border border-[#2b3650] transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${updatingSource ? "animate-spin" : ""}`} />
+                  <span>Switch to {dataSource === "db" ? "AniList API" : "Cloud SQL (Recommended)"}</span>
+                </button>
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="p-5 rounded-2xl bg-[#121622] border border-[#1f2638] flex flex-col justify-between">
                 <div className="flex items-center justify-between text-xs text-gray-400">
