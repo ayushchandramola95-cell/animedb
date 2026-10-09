@@ -29,6 +29,11 @@ export const EXTENDED_ANILIST_QUERY = `
         romaji
         english
       }
+      status
+      episodes
+      nextAiringEpisode {
+        episode
+      }
       streamingEpisodes {
         title
         thumbnail
@@ -158,7 +163,40 @@ export async function syncExtendedDataForAnime(
           );
           episodesCount++;
         } catch (epErr: any) {
-          errors.push(`Episode ${epNum}: ${epErr.message}`);
+          errors.push(`Episode #${epNum}: ${epErr.message}`);
+        }
+      }
+    }
+
+    // Fallback: If streamingEpisodes is empty, but media has an episode count (e.g. 12, 24) or nextAiringEpisode or db has episodes:
+    if (episodesCount === 0) {
+      let knownEpisodes = media.episodes;
+      if (!knownEpisodes && media.nextAiringEpisode?.episode) {
+        knownEpisodes = Math.max(1, media.nextAiringEpisode.episode - 1);
+      }
+      if (!knownEpisodes) {
+        const dbAnime = await query(`SELECT episodes FROM anime WHERE anilist_id = $1`, [anilistId]).catch(() => ({ rows: [] }));
+        if (dbAnime.rows.length > 0 && dbAnime.rows[0].episodes) {
+          knownEpisodes = dbAnime.rows[0].episodes;
+        }
+      }
+
+      if (knownEpisodes && knownEpisodes > 0) {
+        const totalToGen = Math.min(knownEpisodes, 100);
+        for (let i = 1; i <= totalToGen; i++) {
+          try {
+            await query(
+              `
+              INSERT INTO anime_episodes (
+                anime_id, episode_number, title, updated_at
+              )
+              VALUES ($1, $2, $3, NOW())
+              ON CONFLICT (anime_id, episode_number) DO NOTHING;
+            `,
+              [anilistId, i, `Episode ${i}`]
+            );
+            episodesCount++;
+          } catch {}
         }
       }
     }
@@ -274,7 +312,7 @@ export async function syncExtendedDataForAnime(
               "User-Agent": "AnimeDB-ExtendedSyncEngine/1.0",
             },
             body: JSON.stringify({
-              anime_search_filter: { search: term, partial_match: false },
+              anime_search_filter: { search: term, partial_match: true },
             }),
             signal: AbortSignal.timeout(6000),
           });
@@ -283,12 +321,22 @@ export async function syncExtendedDataForAnime(
 
           const songList = await anisongRes.json().catch(() => []);
           if (Array.isArray(songList) && songList.length > 0) {
-            const matchingSongs = songList.filter(
+            let matchingSongs = songList.filter(
               (s: any) =>
                 s.linked_ids?.anilist === anilistId ||
+                (media.idMal && s.linked_ids?.myanimelist === media.idMal) ||
                 s.animeENName?.toLowerCase() === term?.toLowerCase() ||
                 s.animeJPName?.toLowerCase() === term?.toLowerCase()
             );
+
+            if (matchingSongs.length === 0 && term) {
+              const lowerTerm = term.toLowerCase();
+              matchingSongs = songList.filter(
+                (s: any) =>
+                  (s.animeENName && s.animeENName.toLowerCase().includes(lowerTerm)) ||
+                  (s.animeJPName && s.animeJPName.toLowerCase().includes(lowerTerm))
+              );
+            }
 
             for (const s of matchingSongs) {
               const songTypeStr = s.songType || "";
@@ -357,6 +405,12 @@ export async function syncExtendedDataForAnime(
       ]
     );
 
+    // Stamp anime as having been checked/enriched for extras
+    await query(
+      `UPDATE anime SET extras_synced_at = NOW() WHERE anilist_id = $1;`,
+      [anilistId]
+    ).catch(() => {});
+
     return {
       animeId: anilistId,
       title: animeTitle,
@@ -368,6 +422,13 @@ export async function syncExtendedDataForAnime(
     };
   } catch (error: any) {
     console.error(`Extended Sync Error for Anime #${anilistId}:`, error);
+
+    // Stamp anime so crawler never loops on errored items
+    await query(
+      `UPDATE anime SET extras_synced_at = NOW() WHERE anilist_id = $1;`,
+      [anilistId]
+    ).catch(() => {});
+
     return {
       animeId: anilistId,
       title: animeTitle,
@@ -546,7 +607,7 @@ export async function getCrawlBatchSummary(options: CrawlBatchOptions): Promise<
   const countSql = `
     SELECT
       COUNT(1) as total_matching,
-      COUNT(1) FILTER (WHERE EXISTS (SELECT 1 FROM anime_episodes e WHERE e.anime_id = a.anilist_id)) as already_enriched
+      COUNT(1) FILTER (WHERE a.extras_synced_at IS NOT NULL) as already_enriched
     FROM anime a
     ${baseWhere};
   `;
@@ -592,7 +653,7 @@ export async function runCrawlBatchStep(options: CrawlBatchOptions): Promise<{
   }
 
   if (skipAlreadySynced) {
-    whereClauses.push(`NOT EXISTS (SELECT 1 FROM anime_episodes e WHERE e.anime_id = a.anilist_id)`);
+    whereClauses.push(`a.extras_synced_at IS NULL`);
   }
 
   const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
@@ -600,8 +661,11 @@ export async function runCrawlBatchStep(options: CrawlBatchOptions): Promise<{
   let orderSql = `
     ORDER BY
       CASE 
-        WHEN a.status IN ('RELEASING', 'NOT_YET_RELEASED') THEN 0 
-        ELSE 1 
+        WHEN a.status = 'RELEASING' THEN 0
+        WHEN a.status = 'FINISHED' AND a.season_year = 2026 THEN 1
+        WHEN a.status = 'FINISHED' THEN 2
+        WHEN a.status = 'NOT_YET_RELEASED' THEN 3
+        ELSE 4
       END ASC,
       a.season_year DESC NULLS LAST,
       a.popularity DESC NULLS LAST
